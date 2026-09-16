@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { SubagentPlacementBackend } from "@bitmonk8/pi-theta/src/runtime/subagent-placement";
 import { createHerdrPlacementBackend } from "./herdr-placement-backend.ts";
 import { isPlacementDiscoverPayload, PLACEMENT_DISCOVER_CHANNEL } from "./protocol.ts";
+import { attachHerdrChildReporter, type ChildReporterHost } from "./herdr-child-reporter.ts";
 
 /** The `pi.events` surface consumed — `EventBus` at the pin (Pi `dist/core/event-bus.d.ts`). */
 export interface PlacementEventBus {
@@ -63,7 +64,15 @@ export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrP
   });
 }
 
-/** Pi's extension factory. */
+/**
+ * Pi's extension factory. Parent role: register the `herdr` placement backend (0.1.0).
+ * Child role (0.2.0): when this process is a placed theta child in a Herdr pane
+ * (`--theta-launch` on argv + the pane env), report its own pane's agent lifecycle so
+ * Herdr's agents list shows it — observed on Herdr 0.8.0: reports from `herdr:pi` inside
+ * a theta child were acknowledged but not applied, while custom-source reports on the
+ * same kind of pane are applied.
+ */
 export default function piThetaHerdr(pi: ExtensionAPI): void {
   registerHerdrPlacement(pi as unknown as PlacementHost);
+  attachHerdrChildReporter(pi as unknown as ChildReporterHost);
 }

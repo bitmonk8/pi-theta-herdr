@@ -10,7 +10,6 @@ import {
 } from "../src/herdr-placement-backend.ts";
 import {
   HerdrRequestError,
-  HERDR_REPORT_AGENT,
   HERDR_REPORT_SOURCE,
   type HerdrClient,
   type HerdrPaneEnv,
@@ -22,7 +21,6 @@ import {
 
 const NOW = 1_700_000_000_000;
 const S = HERDR_REPORT_SOURCE;
-const A = HERDR_REPORT_AGENT;
 
 const PANE: HerdrPaneEnv = { socketPath: "s", paneId: "w1:p2", workspaceId: "w7" };
 
@@ -150,7 +148,7 @@ describe("§5.E layoutApplyPane / place()", () => {
       env: { PATH: "x", ANTHROPIC_API_KEY: "sk" },
     });
     expect(client.calls.paneReportMetadata).toEqual([
-      { paneId: "w1:p9", metadata: { source: S, agent: A, seq: NOW * 1000, displayAgent: "worker" } },
+      { paneId: "w1:p9", metadata: { source: S, seq: NOW * 1000, displayAgent: "worker" } },
     ]);
     expect(client.request).not.toHaveBeenCalled();
     expect(client.paneClose).not.toHaveBeenCalled();
@@ -509,7 +507,7 @@ describe("§6.P parent place() reporting (D20)", () => {
     await backend.place(sampleRequest());
     await waitUntil(() => client.calls.paneReportMetadata.length === 1);
     expect(client.calls.paneReportMetadata).toEqual([
-      { paneId: "w1:p9", metadata: { source: S, agent: A, seq: 1_700_000_000_000_000, displayAgent: "worker" } },
+      { paneId: "w1:p9", metadata: { source: S, seq: 1_700_000_000_000_000, displayAgent: "worker" } },
     ]);
     expect(client.layoutApplyPane).toHaveBeenCalledTimes(1);
     expect(client.paneReportAgent).not.toHaveBeenCalled();
@@ -544,10 +542,10 @@ describe("§6.P parent place() reporting (D20)", () => {
       expect(fake.requests[1]!.params).toEqual({
         pane_id: "w1:p9",
         source: S,
-        agent: A,
         seq: NOW * 1000,
         display_agent: "worker",
       });
+      expect("agent" in (fake.requests[1]!.params as Record<string, unknown>)).toBe(false);
     } finally {
       await fake.close();
     }

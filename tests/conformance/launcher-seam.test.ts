@@ -41,6 +41,8 @@ function fakeClient(resolution: "resolve" | "reject", opts: { paneId?: string } 
     paneClose: async (): Promise<void> => {},
     paneRename: async (): Promise<void> => {},
     paneReportMetadata: async (): Promise<void> => {},
+    paneReportAgent: async (): Promise<void> => {},
+    paneReportAgentSession: async (): Promise<void> => {},
   };
 }
 
@@ -112,6 +114,8 @@ describe("§5.H8-H10 real placeSubagentChild over the companion backend", () => 
       },
       paneRename: async (): Promise<void> => {},
       paneReportMetadata: async (): Promise<void> => {},
+      paneReportAgent: async (): Promise<void> => {},
+      paneReportAgentSession: async (): Promise<void> => {},
     };
     const backend = backendWith({ client });
     const result = await placeSubagentChild(request({ label: "child" }), {

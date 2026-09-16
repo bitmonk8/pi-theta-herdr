@@ -10,6 +10,20 @@ export interface HerdrPaneEnv {
 
 /** pi-config's default deadline (`opts.timeoutMs ?? 5000`). */
 export const HERDR_REQUEST_TIMEOUT_MS = 5000;
+
+/**
+ * The companion's Herdr reporting identity. `source` names this package — a custom source,
+ * which Herdr applies to any pane (its own `herdr:pi` source is honoured only on panes whose
+ * root process Herdr detects as pi; a theta child's root is `node …/cli.js`). `agent` belongs
+ * only in `pane.report_agent` / `pane.report_agent_session`; observed on Herdr 0.8.0 (protocol
+ * 20): a `pane.report_metadata` WITHOUT `agent` is applied, the same report WITH `agent: "pi"`
+ * is acknowledged and NOT applied on panes whose root Herdr does not recognise as pi.
+ */
+export const HERDR_REPORT_SOURCE = "pi-theta-herdr";
+export const HERDR_REPORT_AGENT = "pi";
+
+/** `pane.report_agent`'s `state` (Herdr `PaneAgentState`). `done` is absent on purpose: Herdr derives it from `working → idle` and does not accept it as input. */
+export type HerdrAgentState = "idle" | "working" | "blocked" | "unknown";
 /** pi-config's `layout.apply` override (`{ timeoutMs: 15_000 }` in `runInHerdr`). */
 export const LAYOUT_APPLY_TIMEOUT_MS = 15_000;
 
@@ -76,8 +90,28 @@ export interface LayoutApplyPaneInput {
 
 export interface PaneMetadata {
   readonly source: string;
+  readonly seq?: number;
   readonly displayAgent?: string;
   readonly title?: string;
+}
+
+export interface PaneAgentReport {
+  readonly source: string;
+  readonly agent: string;
+  readonly state: HerdrAgentState;
+  readonly seq?: number;
+  readonly message?: string;
+  readonly agentSessionId?: string;
+  readonly agentSessionPath?: string;
+}
+
+export interface PaneAgentSessionReport {
+  readonly source: string;
+  readonly agent: string;
+  readonly seq?: number;
+  readonly sessionStartSource?: string;
+  readonly agentSessionId?: string;
+  readonly agentSessionPath?: string;
 }
 
 export interface HerdrClient {
@@ -90,8 +124,12 @@ export interface HerdrClient {
   paneClose(paneId: string, opts?: HerdrRequestOptions): Promise<void>;
   /** `pane.rename { pane_id, label }`; result discarded. */
   paneRename(paneId: string, label: string, opts?: HerdrRequestOptions): Promise<void>;
-  /** `pane.report_metadata { pane_id, source, display_agent?, title? }`; result discarded. */
+  /** `pane.report_metadata { pane_id, source, seq?, display_agent?, title? }`; result discarded. */
   paneReportMetadata(paneId: string, metadata: PaneMetadata, opts?: HerdrRequestOptions): Promise<void>;
+  /** `pane.report_agent { pane_id, source, agent, seq?, state, message?, agent_session_id?, agent_session_path? }`; result discarded. */
+  paneReportAgent(paneId: string, report: PaneAgentReport, opts?: HerdrRequestOptions): Promise<void>;
+  /** `pane.report_agent_session { pane_id, source, agent, seq?, session_start_source?, agent_session_id?, agent_session_path? }`; result discarded. */
+  paneReportAgentSession(paneId: string, report: PaneAgentSessionReport, opts?: HerdrRequestOptions): Promise<void>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -186,6 +224,7 @@ export function createHerdrClient(deps: HerdrClientDeps = {}): HerdrClient {
       {
         pane_id: paneId,
         source: metadata.source,
+        ...(metadata.seq !== undefined ? { seq: metadata.seq } : {}),
         ...(metadata.displayAgent !== undefined ? { display_agent: metadata.displayAgent } : {}),
         ...(metadata.title !== undefined ? { title: metadata.title } : {}),
       },
@@ -193,7 +232,40 @@ export function createHerdrClient(deps: HerdrClientDeps = {}): HerdrClient {
     );
   };
 
-  return { env: () => herdrEnv(clientEnv), request, layoutApplyPane, paneClose, paneRename, paneReportMetadata };
+  const paneReportAgent = async (paneId: string, report: PaneAgentReport, opts?: HerdrRequestOptions): Promise<void> => {
+    await request(
+      "pane.report_agent",
+      {
+        pane_id: paneId,
+        source: report.source,
+        agent: report.agent,
+        ...(report.seq !== undefined ? { seq: report.seq } : {}),
+        state: report.state,
+        ...(report.message !== undefined ? { message: report.message } : {}),
+        ...(report.agentSessionId !== undefined ? { agent_session_id: report.agentSessionId } : {}),
+        ...(report.agentSessionPath !== undefined ? { agent_session_path: report.agentSessionPath } : {}),
+      },
+      opts,
+    );
+  };
+
+  const paneReportAgentSession = async (paneId: string, report: PaneAgentSessionReport, opts?: HerdrRequestOptions): Promise<void> => {
+    await request(
+      "pane.report_agent_session",
+      {
+        pane_id: paneId,
+        source: report.source,
+        agent: report.agent,
+        ...(report.seq !== undefined ? { seq: report.seq } : {}),
+        ...(report.sessionStartSource !== undefined ? { session_start_source: report.sessionStartSource } : {}),
+        ...(report.agentSessionId !== undefined ? { agent_session_id: report.agentSessionId } : {}),
+        ...(report.agentSessionPath !== undefined ? { agent_session_path: report.agentSessionPath } : {}),
+      },
+      opts,
+    );
+  };
+
+  return { env: () => herdrEnv(clientEnv), request, layoutApplyPane, paneClose, paneRename, paneReportMetadata, paneReportAgent, paneReportAgentSession };
 }
 
 /** = createHerdrClient().request(method, params, opts). Return type tightened from `any` to `unknown` (type-level only). */
@@ -221,4 +293,10 @@ export function paneRename(paneId: string, label: string, opts?: HerdrRequestOpt
 }
 export function paneReportMetadata(paneId: string, metadata: PaneMetadata, opts?: HerdrRequestOptions): Promise<void> {
   return createHerdrClient().paneReportMetadata(paneId, metadata, opts);
+}
+export function paneReportAgent(paneId: string, report: PaneAgentReport, opts?: HerdrRequestOptions): Promise<void> {
+  return createHerdrClient().paneReportAgent(paneId, report, opts);
+}
+export function paneReportAgentSession(paneId: string, report: PaneAgentSessionReport, opts?: HerdrRequestOptions): Promise<void> {
+  return createHerdrClient().paneReportAgentSession(paneId, report, opts);
 }

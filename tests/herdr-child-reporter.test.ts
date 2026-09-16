@@ -266,7 +266,7 @@ describe("§6.M request sequence per event", () => {
     expect(fake.requests.map((r) => [r.method, r.params])).toEqual([
       [
         "pane.report_metadata",
-        { pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: B + 1, display_agent: "worker#ab12cd34" },
+        { pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, seq: B + 1, display_agent: "worker#ab12cd34" },
       ],
       [
         "pane.report_agent_session",
@@ -281,6 +281,7 @@ describe("§6.M request sequence per event", () => {
       ],
       ["pane.report_agent", { pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: B + 3, state: "idle" }],
     ]);
+    expect("agent" in (fake.requests[0]!.params as Record<string, unknown>)).toBe(false);
     expect(fake.connections).toBe(3);
   });
 
@@ -455,7 +456,7 @@ describe("§6.M request sequence per event", () => {
     await reporter.flush();
     expect(client.calls.paneReportMetadata[0]).toEqual({
       paneId: "w1:p1",
-      metadata: { source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: B + 1, displayAgent: "worker#ab12cd34" },
+      metadata: { source: HERDR_REPORT_SOURCE, seq: B + 1, displayAgent: "worker#ab12cd34" },
       opts: { timeoutMs: 50 },
     });
     expect(client.calls.paneReportAgentSession[0]).toEqual({

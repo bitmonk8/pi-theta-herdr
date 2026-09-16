@@ -1,5 +1,5 @@
 import type { PlacedChild, SubagentPlacementBackend, SubagentPlacementRequest } from "@bitmonk8/pi-theta/src/runtime/subagent-placement";
-import { createHerdrClient, HerdrRequestError, type HerdrClient } from "./herdr-client.ts";
+import { createHerdrClient, HerdrRequestError, HERDR_REPORT_SOURCE, type HerdrClient } from "./herdr-client.ts";
 
 export const HERDR_PLACEMENT_NAME = "herdr";
 /**
@@ -25,6 +25,8 @@ export class HerdrPlacementError extends Error {
 export interface HerdrPlacementBackendDeps {
   /** Default `createHerdrClient()` (process env, process platform, node:net). */
   readonly client?: HerdrClient;
+  /** Clock for the metadata report's `seq`; default `Date.now`. */
+  readonly now?: () => number;
 }
 
 /**
@@ -48,6 +50,7 @@ export function paneEnvOverlay(env: Readonly<Record<string, string | undefined>>
 
 export function createHerdrPlacementBackend(deps: HerdrPlacementBackendDeps = {}): SubagentPlacementBackend {
   const client = deps.client ?? createHerdrClient();
+  const now = deps.now ?? Date.now;
   return {
     name: HERDR_PLACEMENT_NAME,
     priority: HERDR_PLACEMENT_PRIORITY,
@@ -75,6 +78,18 @@ export function createHerdrPlacementBackend(deps: HerdrPlacementBackendDeps = {}
           throw new HerdrPlacementError(request.label, error.message, { cause: error });
         }
         throw error;
+      }
+      // D20: label the tab before the child boots (fire-and-forget, never delays place()).
+      try {
+        void client
+          .paneReportMetadata(paneId, {
+            source: HERDR_REPORT_SOURCE,
+            seq: now() * 1000,
+            displayAgent: request.label,
+          })
+          .catch(() => {});
+      } catch {
+        // The pane is live; a synchronous throw from the client must not fail the spawn (P7).
       }
       return {
         handle: paneId,

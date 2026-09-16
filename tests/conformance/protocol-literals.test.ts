@@ -30,6 +30,8 @@ function stubClient(): HerdrClient {
     paneClose: async (): Promise<void> => {},
     paneRename: async (): Promise<void> => {},
     paneReportMetadata: async (): Promise<void> => {},
+    paneReportAgent: async (): Promise<void> => {},
+    paneReportAgentSession: async (): Promise<void> => {},
   };
 }
 

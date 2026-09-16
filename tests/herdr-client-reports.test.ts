@@ -115,22 +115,25 @@ describe("§6.K client wrappers (tests/herdr-client-reports.test.ts)", () => {
     expect("seq" in params).toBe(false);
   });
 
-  it("K5 paneReportMetadata with the new agent/seq fields sends the exact params in wire key order", async () => {
+  it("K5 paneReportMetadata with seq sends the exact params in wire key order", async () => {
     const fake = await fakeServer();
     const client = createHerdrClient({ env: fake.env });
-    await client.paneReportMetadata("w1:p9", { source: S, agent: A, seq: 9, displayAgent: "worker" });
+    await client.paneReportMetadata("w1:p9", { source: S, seq: 9, displayAgent: "worker" });
     const req = fake.requests[0]!;
     expect(req.method).toBe("pane.report_metadata");
-    expect(req.params).toEqual({ pane_id: "w1:p9", source: S, agent: A, seq: 9, display_agent: "worker" });
-    expect(Object.keys(req.params as Record<string, unknown>)).toEqual(["pane_id", "source", "agent", "seq", "display_agent"]);
+    const params = req.params as Record<string, unknown>;
+    expect(params).toEqual({ pane_id: "w1:p9", source: S, seq: 9, display_agent: "worker" });
+    expect(Object.keys(params)).toEqual(["pane_id", "source", "seq", "display_agent"]);
+    expect("agent" in params).toBe(false);
   });
 
-  it("K6 paneReportMetadata in its 0.1.0 form (no agent/seq) is unchanged on the wire", async () => {
+  it("K6 paneReportMetadata in its 0.1.0 form (no seq) is unchanged on the wire", async () => {
     const fake = await fakeServer();
     const client = createHerdrClient({ env: fake.env });
     await client.paneReportMetadata("w1:p9", { source: S, displayAgent: "worker" });
     const params = fake.requests[0]!.params as Record<string, unknown>;
     expect(params).toEqual({ pane_id: "w1:p9", source: S, display_agent: "worker" });
+    expect("agent" in params).toBe(false);
   });
 
   it("K7 a refused pane.report_agent rejects HerdrRequestError kind refused with the verbatim body", async () => {
