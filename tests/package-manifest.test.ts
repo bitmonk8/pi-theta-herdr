@@ -129,19 +129,23 @@ describe("§5.I package.json dependency discipline and manifest pins", () => {
     expect(herdrConfig.default.test.include).toEqual(["tests/herdr-live/**/*.test.ts"]);
   });
 
-  it("no silent skipping anywhere under tests/**: no .skip(, no .todo( outside the two pin-after-first-run rows", () => {
+  it("no silent skipping anywhere under tests/**", () => {
     const testsDir = join(ROOT, "tests");
     const files = walkTsFiles(testsDir);
     expect(files.length, "no tests/**/*.ts files found to audit").toBeGreaterThan(0);
+    // Build the needle patterns via concatenation so this audit file's own
+    // source lines do not self-match when scanned.
+    const dotSkipParen = new RegExp("\\" + "." + "skip" + "\\(");
+    const dotTodoParen = new RegExp("\\" + "." + "todo" + "\\(");
     const violations: string[] = [];
     for (const file of files) {
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (/\.skip\(/.test(line)) violations.push(`${relative(ROOT, file)}:${i + 1}: .skip(`);
-        // `.todo(` is allowed ONLY in tests/herdr-live/**, and only for the
-        // two rows the seam sheet marks pin-after-first-run (J5, J6).
-        if (/\.todo\(/.test(line) && !file.includes(join("tests", "herdr-live"))) {
-          violations.push(`${relative(ROOT, file)}:${i + 1}: .todo( outside tests/herdr-live`);
+        if (dotSkipParen.test(line)) violations.push(`${relative(ROOT, file)}:${i + 1}: skip marker`);
+        // The todo marker is allowed ONLY in tests/herdr-live/**, and only
+        // for the two rows the seam sheet marks pin-after-first-run (J5, J6).
+        if (dotTodoParen.test(line) && !file.includes(join("tests", "herdr-live"))) {
+          violations.push(`${relative(ROOT, file)}:${i + 1}: todo marker outside tests/herdr-live`);
         }
       });
     }

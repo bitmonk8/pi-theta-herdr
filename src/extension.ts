@@ -1,0 +1,69 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { SubagentPlacementBackend } from "@bitmonk8/pi-theta/src/runtime/subagent-placement";
+import { createHerdrPlacementBackend } from "./herdr-placement-backend.ts";
+import { isPlacementDiscoverPayload, PLACEMENT_DISCOVER_CHANNEL } from "./protocol.ts";
+
+/** The `pi.events` surface consumed — `EventBus` at the pin (Pi `dist/core/event-bus.d.ts`). */
+export interface PlacementEventBus {
+  emit(channel: string, data: unknown): void;
+  on(channel: string, handler: (data: unknown) => void): () => void;
+}
+
+/** The structural subset of `ExtensionAPI` the registration consumes; tests drive it with a fake. */
+export interface PlacementHost {
+  readonly events?: unknown;
+  on(event: "session_shutdown", handler: () => void): unknown;
+}
+
+export interface RegisterHerdrPlacementDeps {
+  /** Default `createHerdrPlacementBackend()`. */
+  readonly backend?: SubagentPlacementBackend;
+}
+
+/**
+ * Presence-probe `pi.events` the way pi-theta's factory does (`factory.ts`:
+ * `typeof pi.events === "object" && pi.events !== null && typeof pi.events.on ===
+ * "function" && typeof pi.events.emit === "function"`). `typeof`-only; nothing is invoked.
+ */
+export function probePlacementEventBus(events: unknown): PlacementEventBus | undefined {
+  if (typeof events !== "object" || events === null) return undefined;
+  const record = events as Record<string, unknown>;
+  return typeof record["on"] === "function" && typeof record["emit"] === "function"
+    ? (events as PlacementEventBus)
+    : undefined;
+}
+
+/**
+ * Register the `herdr` backend with pi-theta over the RFC 0012 §5 discover
+ * channel. One subscription, made in the factory body; one `register` call per
+ * session (P1: pi-theta emits discover on every compose pass — initial and every
+ * hot-reload re-compose — without clearing its registry, and a repeat `register`
+ * under the same name draws `theta/load/subagent-placement-invalid`); released
+ * at `session_shutdown` (RFC §5; pi-theta's own `factory.ts` releases its offer
+ * subscription there). No offer is emitted (Decision D8, §4.3). No `pi.events`
+ * (an older host) ⇒ no-op: pi-theta then runs built-ins only.
+ */
+export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrPlacementDeps = {}): void {
+  const events = probePlacementEventBus(host.events);
+  if (events === undefined) {
+    return;
+  }
+  const backend = deps.backend ?? createHerdrPlacementBackend();
+  let registeredThisSession = false;
+  const unsubscribe = events.on(PLACEMENT_DISCOVER_CHANNEL, (data: unknown): void => {
+    if (!isPlacementDiscoverPayload(data) || registeredThisSession) {
+      return;
+    }
+    registeredThisSession = true;
+    data.register(backend);
+  });
+  host.on("session_shutdown", (): void => {
+    registeredThisSession = false;
+    unsubscribe();
+  });
+}
+
+/** Pi's extension factory. */
+export default function piThetaHerdr(pi: ExtensionAPI): void {
+  registerHerdrPlacement(pi as unknown as PlacementHost);
+}

@@ -232,7 +232,9 @@ describe("§5.E layoutApplyPane / place()", () => {
     try {
       const socket = new FakeSocket();
       const client = createHerdrClient({
-        env: PANE,
+        // herdrEnv() reads the four HERDR_* process variables, so the injected
+        // env must be process-env shaped; PANE is the parsed result, not the input.
+        env: { HERDR_ENV: "1", HERDR_SOCKET_PATH: "s", HERDR_PANE_ID: "w1:p2", HERDR_WORKSPACE_ID: "w7" },
         connect: () => {
           queueMicrotask(() => socket.emit("connect"));
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

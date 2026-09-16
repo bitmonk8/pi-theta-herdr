@@ -70,7 +70,9 @@ describe("§5.G registration", () => {
     const host = fakeHost(bus);
     registerHerdrPlacement(host, { backend: stubBackend() });
     const registered: unknown[] = [];
-    const payload = { apiVersion: 1, register: (b: unknown): void => registered.push(b) };
+    const payload = { apiVersion: 1, register: (b: unknown): void => {
+        registered.push(b);
+      } };
     bus.emit(PLACEMENT_DISCOVER_CHANNEL, payload);
     bus.emit(PLACEMENT_DISCOVER_CHANNEL, payload);
     expect(registered).toHaveLength(1);
@@ -81,7 +83,9 @@ describe("§5.G registration", () => {
     const host = fakeHost(bus);
     registerHerdrPlacement(host, { backend: stubBackend() });
     const registered: unknown[] = [];
-    bus.emit(PLACEMENT_DISCOVER_CHANNEL, { apiVersion: 2, register: (b: unknown): void => registered.push(b) });
+    bus.emit(PLACEMENT_DISCOVER_CHANNEL, { apiVersion: 2, register: (b: unknown): void => {
+        registered.push(b);
+      } });
     expect(registered).toHaveLength(0);
   });
 
@@ -99,7 +103,9 @@ describe("§5.G registration", () => {
     const host = fakeHost(bus);
     registerHerdrPlacement(host, { backend: stubBackend() });
     const registered: unknown[] = [];
-    const payload = { apiVersion: 1, register: (b: unknown): void => registered.push(b) };
+    const payload = { apiVersion: 1, register: (b: unknown): void => {
+        registered.push(b);
+      } };
     bus.emit(PLACEMENT_DISCOVER_CHANNEL, payload);
     expect(registered).toHaveLength(1);
 
@@ -121,7 +127,9 @@ describe("§5.G registration", () => {
     const backend2 = stubBackend();
     registerHerdrPlacement(host2, { backend: backend2 });
     const registered: unknown[] = [];
-    bus.emit(PLACEMENT_DISCOVER_CHANNEL, { apiVersion: 1, register: (b: unknown): void => registered.push(b) });
+    bus.emit(PLACEMENT_DISCOVER_CHANNEL, { apiVersion: 1, register: (b: unknown): void => {
+        registered.push(b);
+      } });
     expect(registered).toEqual([backend2]);
   });
 
@@ -150,7 +158,9 @@ describe("§5.G registration", () => {
     registerHerdrPlacement(host, { backend: stubBackend() });
     registerHerdrPlacement(host, { backend: stubBackend() });
     const registered: unknown[] = [];
-    bus.emit(PLACEMENT_DISCOVER_CHANNEL, { apiVersion: 1, register: (b: unknown): void => registered.push(b) });
+    bus.emit(PLACEMENT_DISCOVER_CHANNEL, { apiVersion: 1, register: (b: unknown): void => {
+        registered.push(b);
+      } });
     expect(registered).toHaveLength(2);
   });
 
