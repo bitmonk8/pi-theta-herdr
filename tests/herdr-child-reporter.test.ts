@@ -917,6 +917,9 @@ describe("§5.S outcome hook", () => {
     expect(Object.keys(fake.requests[4]!.params as Record<string, unknown>)).toEqual(["pane_id", "source", "agent", "seq", "state"]);
     expect(fake.requests.length).toBe(5);
     expect(fake.connections).toBe(5);
+    // §5 preamble hygiene: this row reached agent_settled while holding — end in session_shutdown.
+    const results = host.emit("session_shutdown", { reason: "quit" }, fakeCtx());
+    await Promise.all(results as Promise<void>[]);
   });
 
   it("S4 an err outcome renames then reports idle+message; the rename consumes no seq", async () => {
@@ -944,6 +947,9 @@ describe("§5.S outcome hook", () => {
     ]);
     expect(Object.keys(fake.requests[4]!.params as Record<string, unknown>)).toEqual(["pane_id", "label"]);
     expect(fake.requests.length).toBe(6);
+    // §5 preamble hygiene: this row reached agent_settled while holding — end in session_shutdown.
+    const results = host.emit("session_shutdown", { reason: "quit" }, fakeCtx());
+    await Promise.all(results as Promise<void>[]);
   });
 
   it("S5 no events dep: subscribed is false; the sequence is identical to the 0.2.0 path", async () => {
@@ -1003,6 +1009,9 @@ describe("§5.S outcome hook", () => {
     bus.emit(OUTCOME, OUTCOME_ERR);
     await reporter.flush();
     expect(fake.requests.length).toBe(6);
+    // §5 preamble hygiene: this row reached agent_settled while holding — end in session_shutdown.
+    const results = host.emit("session_shutdown", { reason: "quit" }, fakeCtx());
+    await Promise.all(results as Promise<void>[]);
   });
 
   it("S7 garbage outcome payloads neither throw nor consume the latch", async () => {

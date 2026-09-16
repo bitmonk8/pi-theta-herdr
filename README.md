@@ -164,8 +164,9 @@ before the tab closes itself → at `Err`: the tab label becomes `FAILED
 <label>` and the badge reads `done` (or `idle` when no turn ever ran); the
 tab stays for a human to read or continue, and their turns then flip
 `working`/`done` as before. The `FAILED` label is never restored. The
-`message` is not visible through `pane.get` (no field carries it; observed
-`state_labels`: <fill from J10/smoke>).
+`message` is not visible through `pane.get` (no field carries it; observed on
+Herdr 0.8.0: `state_labels` undefined; the rename is visible only in
+`label`).
 
 ### Coexistence with `herdr:pi`
 
@@ -199,7 +200,8 @@ refusal envelope and emits no outcome event — its pane stays `idle` and is
 not retitled (pi-theta 0.478.0 scope). Two copies of this package loaded in
 one child each rename and report once — harmless duplicates.
 
-### Expected `herdr agent list` timeline (0.3.0 — to be re-observed)
+### Expected `herdr agent list` timeline (0.3.0 — observed 2026-09-16; see
+*Verified on real Herdr (0.3.0)*)
 
 Drawn from the Phase 2D-bis smoke procedure's `herdr-smoke.theta` driver
 (`par for … max 2` over two `Ok` workers, then one `Err` worker), polled
@@ -249,14 +251,32 @@ after metadata alone; J8: `agent_session` absent).
 
 ### Verified on real Herdr (0.3.0)
 
-To be re-observed from the 0.3.0 smoke (§8 of the seam sheet): the E
-child's `FAILED` label and `done`, the `Ok` children's absence of a
-between-turn `done`, the surface (if any) that shows the `err` message,
-J10's `label`/`state_labels` readout, the wall time from the last turn's
-settle to the `FAILED` label, whether any pane showed the D34 fallback
-`idle` (none expected, §8).
+Observed timeline from the 2026-09-16 smoke (pi-config carrying pi-theta
+0.478.0 + companion 0.3.0, Herdr 0.8.0 protocol 20, `herdr pane list` polled
+every second):
 
-_Pending: filled in after the 0.3.0 smoke._
+The two `Ok` children `w1:p33B`/`w1:p33C`: t+4.2 s `display_agent:
+herdr-smoke-worker#cd4c0921` / `#188d949c` (`agent: null`, `agent_status:
+unknown`); t+5.3 s `agent: pi`, `agent_status: working`; still `working` at
+t+7.4 s after the turn's tool finished (title back to `π -
+herdr-smoke-worker#… - herdr`) — no between-turn `done`; `w1:p33C` gone at
+t+9.4 s, `w1:p33B` at t+12.6 s. No `done` was caught on either `Ok` pane at
+1 s polling: the `Ok` `idle` window is below the poll resolution (not
+distinguished from a report not applied before the pane closed — the
+offline rows S3/S18 pin the report).
+
+The `Err` child `w1:p33D`: t+12.6 s `display_agent:
+herdr-smoke-failing-worker#0061de67`; t+13.6 s `agent: pi`, `working` (the
+`session_start` `idle` fell between polls); t+14.6 s `label: FAILED
+herdr-smoke-failing-worker#0061de67`, `agent_status: done`, `display_agent`
+unchanged; unchanged until closed by hand. Wall time from `working` to the
+`FAILED` label: ≤ 1 s. No pane showed the D34 fallback `idle`.
+
+The rename lands on `PaneInfo.label`; `title`/`terminal_title` kept
+tracking the terminal. J10 readout: `state_labels` undefined on the
+retitled pane; the `err` message `theta returned Err` is visible on no
+`pane.get`/`pane list` field. Opt-in suite `npm run test:herdr`: J0–J10
+green.
 
 ## Settings
 

@@ -75,7 +75,7 @@ export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrP
  * same kind of pane are applied. 0.3.0: the child role also consumes pi-theta's
  * `pi-theta:subagent-child:outcome:v1` event (pi-theta ≥ 0.478.0) off the same
  * `pi.events` bus the parent role registers over — `ok` settles the pane, `err` retitles
- * it `FAILED <label>`. The bus is probed once here and handed to both roles' entry points.
+ * it `FAILED <label>`. The bus is probed here for the child role; the parent role keeps its own probe.
  */
 export default function piThetaHerdr(pi: ExtensionAPI): void {
   const host = pi as unknown as PlacementHost;

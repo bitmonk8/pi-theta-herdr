@@ -40,7 +40,12 @@ protocol's `apiVersion` (RFC 0012 §5).
 - devDependency `@bitmonk8/pi-theta` bumped to the 0.478.0 commit `079ddb67` (lockfile).
 
 ### Verified
-- (fill from the 0.3.0 smoke and J10, §8 of the seam sheet)
+- 2026-09-16 smoke (pi-config carrying pi-theta 0.478.0 + companion 0.3.0, Herdr 0.8.0
+  protocol 20): the two `Ok` panes went `working` → gone, with no `done` caught at 1 s
+  polling (below the poll resolution); the `Err` pane went `working` at t+13.6 s to
+  `label: FAILED herdr-smoke-failing-worker#0061de67`, `agent_status: done` at t+14.6 s,
+  then lingered until closed by hand; no fallback `idle` observed; the rename lands on
+  `label`, `state_labels` stays undefined. Opt-in suite `npm run test:herdr`: J0–J10 green.
 
 ## [0.2.0]
 

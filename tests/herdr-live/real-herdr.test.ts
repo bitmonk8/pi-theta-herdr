@@ -443,8 +443,10 @@ describe("RFC 0012 Phase 2 §5.J — real Herdr smoke (npm run test:herdr)", () 
         // The child consumed the launch file: proves pi-theta parsed --theta-launch and
         // entered the child regime (not that the launch file's job was done "correctly" -
         // only that it was read at all).
-        // Windows: antivirus may briefly hold a newly-created file, causing
-        // pi-theta's unlinkSync inside deleteLaunchFile to fail silently; retry.
+        // Windows: after pi-theta's single unlink of the launch file, the directory
+        // entry can lag visible-removal by a beat; the wait below covers that lag
+        // (bounded to 2 s), not a retry of the unlink itself - it still throws the
+        // named error if the file was never consumed.
         let launchConsumed = !existsSync(launchPath);
         for (let i = 0; i < 10 && !launchConsumed; i++) {
           await new Promise<void>((r) => setTimeout(r, 200));
