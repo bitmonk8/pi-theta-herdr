@@ -142,11 +142,9 @@ describe("§5.I package.json dependency discipline and manifest pins", () => {
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, i) => {
         if (dotSkipParen.test(line)) violations.push(`${relative(ROOT, file)}:${i + 1}: skip marker`);
-        // The todo marker is allowed ONLY in tests/herdr-live/**, and only
-        // for the two rows the seam sheet marks pin-after-first-run (J5, J6).
-        if (dotTodoParen.test(line) && !file.includes(join("tests", "herdr-live"))) {
-          violations.push(`${relative(ROOT, file)}:${i + 1}: todo marker outside tests/herdr-live`);
-        }
+        // No carve-out anywhere under tests/**: the two rows that once pinned
+        // with a todo marker (J5, J6, tests/herdr-live/**) are now real tests.
+        if (dotTodoParen.test(line)) violations.push(`${relative(ROOT, file)}:${i + 1}: todo marker`);
       });
     }
     expect(violations).toEqual([]);

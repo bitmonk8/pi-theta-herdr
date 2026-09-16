@@ -269,6 +269,10 @@ describe("§5.C request framing (fake daemon)", () => {
     const error = caught as HerdrRequestError;
     expect(error.kind).toBe("timeout");
     expect(error.message).toBe("herdr ping timed out after 50ms");
+    // The client's own deadline destroys its socket rather than leaving the
+    // connection dangling - the fake server's `closedConnections` counter
+    // (server-side `close` event on the accepted socket) is the observable.
+    await waitUntil(() => fake.closedConnections === 1);
   });
 
   it("C11 the default deadline is 5000ms and the request timer is unref'd", async () => {

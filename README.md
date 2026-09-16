@@ -150,7 +150,8 @@ pane as `MSYS_NO_PATHCONV=1 PI_THETA_HERDR_SMOKE=1 pi --approve --no-session
 
 ### Version and detection
 
-- Herdr version and API `protocol` observed: 0.8.0.
+- Herdr version and API `protocol` observed: 0.8.0; `herdr api schema --json`
+  → `protocol: 20`.
 - Registration is quiet on a normal TUI start with the companion loaded: no
   `ignoring subagent placement registration` warning and no
   `theta/load/subagent-placement-unavailable` note; the companion appears in
@@ -231,9 +232,10 @@ pane as `MSYS_NO_PATHCONV=1 PI_THETA_HERDR_SMOKE=1 pi --approve --no-session
 
 ### Opt-in suite
 
-- `npm run test:herdr` from inside a Herdr pane: 4 passed, 2 todo (J5/J6).
-  With `HERDR_ENV` unset, the suite throws at module top level naming the
-  missing variable rather than skipping.
+- `npm run test:herdr` from inside a Herdr pane: 6 rows (J1-J6), all real
+  tests, `npm run test:herdr` → 6 passed. With `HERDR_ENV` unset, the suite
+  throws at module top level naming the missing variable rather than
+  skipping.
 
 ## Licence
 

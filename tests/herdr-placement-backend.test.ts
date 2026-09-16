@@ -501,9 +501,13 @@ describe("§5.F kill()", () => {
     };
     process.on("unhandledRejection", onUnhandled);
     try {
-      const client = fakeClient({
-        paneClose: vi.fn(async () => Promise.reject(new HerdrRequestError('herdr pane.close: {"code":"not_found"}', "pane.close", "refused"))),
-      });
+      const err = new HerdrRequestError('herdr pane.close: {"code":"not_found"}', "pane.close", "refused");
+      // Plain function, NOT `vi.fn(...)`: tinyspy's mock wrapper attaches its
+      // own settle handler to the returned promise, which quietly turns an
+      // "unhandled rejection" trap into a vacuous one - the rejection is
+      // never actually unhandled, so the assertion below would pass even if
+      // `kill()` stopped swallowing the rejection entirely.
+      const client = fakeClient({ paneClose: (): Promise<void> => Promise.reject(err) });
       const backend = createHerdrPlacementBackend({ client });
       const placed = await backend.place(sampleRequest());
       expect(() => placed.kill()).not.toThrow();
@@ -521,7 +525,8 @@ describe("§5.F kill()", () => {
     };
     process.on("unhandledRejection", onUnhandled);
     try {
-      const client = fakeClient({ paneClose: vi.fn(async () => Promise.reject(new Error("boom"))) });
+      // Plain function, NOT `vi.fn(...)` (same tinyspy vacuous-trap hazard as F3).
+      const client = fakeClient({ paneClose: (): Promise<void> => Promise.reject(new Error("boom")) });
       const backend = createHerdrPlacementBackend({ client });
       const placed = await backend.place(sampleRequest());
       expect(() => placed.kill()).not.toThrow();

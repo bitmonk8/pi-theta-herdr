@@ -10,17 +10,24 @@ import type {
   SubagentPlacementRequest,
 } from "@bitmonk8/pi-theta/src/runtime/subagent-placement.ts";
 import { createHerdrPlacementBackend, type HerdrPlacementBackendDeps } from "../../src/herdr-placement-backend.ts";
-import type { HerdrClient, HerdrPaneEnv } from "../../src/herdr-client.ts";
+import type { HerdrClient, HerdrPaneEnv, LayoutApplyPaneInput } from "../../src/herdr-client.ts";
 import { HerdrRequestError } from "../../src/herdr-client.ts";
 import { fakeWire, request } from "../helpers/pi-theta-fixtures.ts";
 
 const PANE: HerdrPaneEnv = { socketPath: "s", paneId: "w1:p1", workspaceId: "w1" };
 
-function fakeClient(resolution: "resolve" | "reject", opts: { paneId?: string } = {}): HerdrClient {
+interface FakeClient extends HerdrClient {
+  readonly layoutApplyPaneCalls: LayoutApplyPaneInput[];
+}
+
+function fakeClient(resolution: "resolve" | "reject", opts: { paneId?: string } = {}): FakeClient {
+  const layoutApplyPaneCalls: LayoutApplyPaneInput[] = [];
   return {
+    layoutApplyPaneCalls,
     env: (): HerdrPaneEnv => PANE,
     request: async (): Promise<unknown> => undefined,
-    layoutApplyPane: async (): Promise<string> => {
+    layoutApplyPane: async (input: LayoutApplyPaneInput): Promise<string> => {
+      layoutApplyPaneCalls.push(input);
       if (resolution === "reject") {
         throw new HerdrRequestError(
           'herdr layout.apply: {"code":"bad_workspace","message":"unknown workspace"}',
@@ -44,8 +51,10 @@ function backendWith(deps: HerdrPlacementBackendDeps): SubagentPlacementBackend 
 describe("§5.H8-H10 real placeSubagentChild over the companion backend", () => {
   it("H8 a successful placement resolves ok:true, sends the argv/label the launcher assembled, and emits no diagnostic", async () => {
     const sink: Diagnostic[] = [];
-    const backend = backendWith({ client: fakeClient("resolve", { paneId: "w1:p9" }) });
-    const result = await placeSubagentChild(request({ label: "child", argv: { ...request().argv, presentation: "visible" } }), {
+    const client = fakeClient("resolve", { paneId: "w1:p9" });
+    const backend = backendWith({ client });
+    const req = request({ label: "child", argv: { ...request().argv, presentation: "visible" } });
+    const result = await placeSubagentChild(req, {
       placement: backend,
       emitDiagnostic: (d): void => {
         sink.push(d);
@@ -56,6 +65,19 @@ describe("§5.H8-H10 real placeSubagentChild over the companion backend", () => 
     if (!result.ok) return;
     expect(result.placed.handle).toBe("w1:p9");
     expect(sink).toHaveLength(0);
+
+    // Seam sheet §5.H row H8: what the REAL launcher (`assembleSubagentArgv` /
+    // `placeSubagentChild` in `@bitmonk8/pi-theta/src/runtime/subagent-launcher.ts`)
+    // hands the backend's `layoutApplyPane`, captured on the fake client.
+    expect(client.layoutApplyPaneCalls).toHaveLength(1);
+    const input = client.layoutApplyPaneCalls[0]!;
+    const command = input.command;
+    expect(command[0]).toBe(req.host.execPath);
+    const flagIndex = command.indexOf("--theta-launch");
+    expect(flagIndex).toBeGreaterThan(-1);
+    expect(command[flagIndex + 1]).toBe("C:/tmp/l/launch.json");
+    expect(command[command.length - 1]).toBe("/child");
+    expect(input.tabLabel).toBe("child");
   });
 
   it("H9 a refused placement resolves ok:false with spawn-failed, abandons the wire, and diagnoses the exact Herdr failure", async () => {
