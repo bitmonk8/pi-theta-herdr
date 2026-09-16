@@ -63,7 +63,7 @@ describe("§5.H3 real PlacementRegistry + real bindPlacementRegistration + the c
     expect(sink[0]!.code).toBe("theta/load/subagent-placement-invalid");
     expect(sink[0]!.severity).toBe("warning");
     expect(sink[0]!.message).toBe(
-      "ignoring subagent placement registration 'herdr': a backend with this name is already registered",
+      "ignoring subagent placement registration 'herdr': a different backend is already registered under this name",
     );
   });
 

@@ -72,9 +72,14 @@ export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrP
  * (`--theta-launch` on argv + the pane env), report its own pane's agent lifecycle so
  * Herdr's agents list shows it — observed on Herdr 0.8.0: reports from `herdr:pi` inside
  * a theta child were acknowledged but not applied, while custom-source reports on the
- * same kind of pane are applied.
+ * same kind of pane are applied. 0.3.0: the child role also consumes pi-theta's
+ * `pi-theta:subagent-child:outcome:v1` event (pi-theta ≥ 0.478.0) off the same
+ * `pi.events` bus the parent role registers over — `ok` settles the pane, `err` retitles
+ * it `FAILED <label>`. The bus is probed once here and handed to both roles' entry points.
  */
 export default function piThetaHerdr(pi: ExtensionAPI): void {
-  registerHerdrPlacement(pi as unknown as PlacementHost);
-  attachHerdrChildReporter(pi as unknown as ChildReporterHost);
+  const host = pi as unknown as PlacementHost;
+  registerHerdrPlacement(host);
+  const events = probePlacementEventBus(host.events);
+  attachHerdrChildReporter(pi as unknown as ChildReporterHost, events !== undefined ? { events } : {});
 }

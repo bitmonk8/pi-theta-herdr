@@ -45,3 +45,41 @@ export function isPlacementDiscoverPayload(data: unknown): data is PlacementDisc
   const record = data as Record<string, unknown>;
   return record["apiVersion"] === PLACEMENT_REGISTRATION_API_VERSION && typeof record["register"] === "function";
 }
+
+// RFC 0012 §7 (pi-theta 0.478.0): the child-outcome channel, carried as the companion's own
+// literals (D1) and pinned equal to pi-theta's SUBAGENT_CHILD_OUTCOME_CHANNEL /
+// SUBAGENT_CHILD_OUTCOME_API_VERSION (src/runtime/subagent-placement-registry.ts) by
+// tests/conformance/child-role.test.ts (Q7/Q8). Emitted once per child-side drive, on the
+// child's own process-local `pi.events`, after the envelope write; `ok` precedes the visible
+// child's `ctx.shutdown()` request. Consumed by src/herdr-child-reporter.ts.
+export const SUBAGENT_CHILD_OUTCOME_CHANNEL = "pi-theta:subagent-child:outcome:v1";
+export const SUBAGENT_CHILD_OUTCOME_API_VERSION = 1;
+
+/** The two outcome values — the PIC-59 envelope arms one-to-one; cancellation and panic are `"err"`. */
+export type SubagentChildOutcome = "ok" | "err";
+
+/** The payload pi-theta emits (`SubagentChildOutcomePayload` at the pin; closed at three fields there). */
+export interface SubagentChildOutcomePayload {
+  readonly apiVersion: typeof SUBAGENT_CHILD_OUTCOME_API_VERSION;
+  readonly outcome: SubagentChildOutcome;
+  /** The marked root's slug (`theta.slashName`, no leading `/`). */
+  readonly slug: string;
+}
+
+/**
+ * Structural guard, the `isPlacementDiscoverPayload` shape: `apiVersion === 1`, `outcome`
+ * one of the two literals, `slug` a non-empty string. Extra keys are tolerated (the discover
+ * guard's posture) — pi-theta promises a new channel version for any widening, and a
+ * consumer that rejected unknown keys would gain nothing but brittleness.
+ */
+export function isSubagentChildOutcomePayload(data: unknown): data is SubagentChildOutcomePayload {
+  if (typeof data !== "object" || data === null) return false;
+  const record = data as Record<string, unknown>;
+  const slug = record["slug"];
+  return (
+    record["apiVersion"] === SUBAGENT_CHILD_OUTCOME_API_VERSION &&
+    (record["outcome"] === "ok" || record["outcome"] === "err") &&
+    typeof slug === "string" &&
+    slug.length > 0
+  );
+}

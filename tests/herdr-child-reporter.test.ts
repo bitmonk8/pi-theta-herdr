@@ -1465,6 +1465,7 @@ describe("§5.H bounded hold", () => {
         const results = host.emit("session_shutdown", { reason }, fakeCtx());
         await Promise.all(results as Promise<void>[]);
         expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(0);
         const before = client.calls.paneReportAgent.length;
         await vi.advanceTimersByTimeAsync(30_000);
         expect(client.calls.paneReportAgent.length).toBe(before);
@@ -1584,6 +1585,7 @@ describe("§5.H bounded hold", () => {
       host.emit("agent_settled", {}, fakeCtx({ idle: true }));
       reporter.detach();
       expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(0);
       const before = client.calls.paneReportAgent.length;
       await vi.advanceTimersByTimeAsync(20_000);
       expect(client.calls.paneReportAgent.length).toBe(before);

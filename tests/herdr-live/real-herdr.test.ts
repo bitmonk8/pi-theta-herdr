@@ -443,7 +443,14 @@ describe("RFC 0012 Phase 2 §5.J — real Herdr smoke (npm run test:herdr)", () 
         // The child consumed the launch file: proves pi-theta parsed --theta-launch and
         // entered the child regime (not that the launch file's job was done "correctly" -
         // only that it was read at all).
-        if (existsSync(launchPath)) {
+        // Windows: antivirus may briefly hold a newly-created file, causing
+        // pi-theta's unlinkSync inside deleteLaunchFile to fail silently; retry.
+        let launchConsumed = !existsSync(launchPath);
+        for (let i = 0; i < 10 && !launchConsumed; i++) {
+          await new Promise<void>((r) => setTimeout(r, 200));
+          launchConsumed = !existsSync(launchPath);
+        }
+        if (!launchConsumed) {
           throw new Error(
             "J10: the child booted but did not consume the launch file - pi-theta did not read --theta-launch (not loaded, or an older build)",
           );
