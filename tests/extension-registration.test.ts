@@ -5,7 +5,23 @@ import type { SubagentPlacementBackend } from "@bitmonk8/pi-theta/src/runtime/su
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import piThetaHerdr, { probePlacementEventBus, registerHerdrPlacement, type PlacementHost } from "../src/extension.ts";
 import { PLACEMENT_DISCOVER_CHANNEL, PLACEMENT_OFFER_CHANNEL } from "../src/protocol.ts";
-import { FakeBus, fakeHost } from "./helpers/fake-host.ts";
+import { FakeBus, fakeCtx, fakeHost } from "./helpers/fake-host.ts";
+
+const CHILD_ARGV_MARKER = ["--theta-launch", "C:\\tmp\\l\\launch.json"];
+const CHILD_ENV_MARKERS = {
+  HERDR_ENV: "1",
+  HERDR_SOCKET_PATH: "pi-theta-herdr-test-g",
+  HERDR_PANE_ID: "w1:p1",
+  HERDR_WORKSPACE_ID: "w1",
+} as const;
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitUntil timed out");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 function stubBackend(name = "herdr"): SubagentPlacementBackend {
   return {
@@ -171,6 +187,85 @@ describe("§5.G registration", () => {
     piThetaHerdr(host as unknown as ExtensionAPI);
     expect(onSpy).toHaveBeenCalledWith(PLACEMENT_DISCOVER_CHANNEL, expect.any(Function));
     expect(bus.subscriberCount(PLACEMENT_DISCOVER_CHANNEL)).toBe(1);
+  });
+});
+
+describe("§6.G additions — both roles in one process", () => {
+  it("G13 the default export wires both the placement backend and the child reporter when the child markers hold", () => {
+    const bus = new FakeBus();
+    const host = fakeHost(bus);
+    const savedArgv = [...process.argv];
+    const savedEnv = { ...process.env };
+    try {
+      process.argv.push(...CHILD_ARGV_MARKER);
+      Object.assign(process.env, CHILD_ENV_MARKERS);
+      piThetaHerdr(host as unknown as ExtensionAPI);
+      expect(host.onCalls).toEqual((["session_shutdown", "session_start", "agent_start", "agent_settled", "session_shutdown"]));
+      expect(bus.subscriberCount(PLACEMENT_DISCOVER_CHANNEL)).toBe(1);
+    } finally {
+      process.argv.length = 0;
+      process.argv.push(...savedArgv);
+      for (const key of Object.keys(process.env)) {
+        if (!(key in savedEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, savedEnv);
+    }
+  });
+
+  it("G14 the default export with the real process.argv (no --theta-launch marker) gains no reporter handlers", () => {
+    const bus = new FakeBus();
+    const host = fakeHost(bus);
+    // No argv/env mutation: this process's own argv (the vitest worker's) never
+    // carries `--theta-launch`, so the child-role gate fails at attach time.
+    piThetaHerdr(host as unknown as ExtensionAPI);
+    expect(host.onCalls).toEqual(["session_shutdown"]);
+  });
+
+  it("G15 both roles fire from one process: registration once, and the child's session_start reports land on the real fake daemon", async () => {
+    const { startFakeHerdrServer } = await import("./helpers/fake-herdr-server.ts");
+    const fake = await startFakeHerdrServer();
+    const savedArgv = [...process.argv];
+    const savedEnv = { ...process.env };
+    try {
+      const bus = new FakeBus();
+      const host = fakeHost(bus);
+      process.argv.push(...CHILD_ARGV_MARKER);
+      Object.assign(process.env, fake.env);
+      piThetaHerdr(host as unknown as ExtensionAPI);
+
+      let registerCount = 0;
+      bus.emit(PLACEMENT_DISCOVER_CHANNEL, {
+        apiVersion: 1,
+        register: (): void => {
+          registerCount += 1;
+        },
+      });
+
+      const before = Date.now();
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      const after = Date.now();
+      await waitUntil(() => fake.requests.length === 3);
+
+      expect(registerCount).toBe(1);
+      expect(fake.requests.map((r) => r.method)).toEqual([
+        "pane.report_metadata",
+        "pane.report_agent_session",
+        "pane.report_agent",
+      ]);
+      const seqs = fake.requests.map((r) => (r.params as Record<string, unknown>)["seq"] as number);
+      expect(seqs[1]).toBe(seqs[0]! + 1);
+      expect(seqs[2]).toBe(seqs[1]! + 1);
+      expect(seqs[0]!).toBeGreaterThanOrEqual(before * 1000 + 1);
+      expect(seqs[0]!).toBeLessThanOrEqual(after * 1000 + 1);
+    } finally {
+      process.argv.length = 0;
+      process.argv.push(...savedArgv);
+      for (const key of Object.keys(process.env)) {
+        if (!(key in savedEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, savedEnv);
+      await fake.close();
+    }
   });
 });
 

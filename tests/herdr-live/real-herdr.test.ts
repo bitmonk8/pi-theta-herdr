@@ -3,9 +3,15 @@
 // shell inside a Herdr pane. J0: a missing pane environment fails the WHOLE
 // FILE loudly at module top level, naming the missing variables — never
 // `it.skip`, never an early return.
+import * as os from "node:os";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { afterAll, describe, expect, it } from "vitest";
-import { createHerdrClient, herdrEnv, HerdrRequestError } from "../../src/herdr-client.ts";
+import { fileURLToPath } from "node:url";
+import { createHerdrClient, herdrEnv, HERDR_REPORT_AGENT, HERDR_REPORT_SOURCE, HerdrRequestError } from "../../src/herdr-client.ts";
 import { createHerdrPlacementBackend } from "../../src/herdr-placement-backend.ts";
+
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 const REQUIRED_VARS = ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_PANE_ID", "HERDR_WORKSPACE_ID"] as const;
 
@@ -27,6 +33,42 @@ const client = createHerdrClient();
 const createdPaneIds: string[] = [];
 let j2PaneId: string | undefined;
 let j5PaneId: string | undefined;
+
+interface PaneInfo {
+  readonly [key: string]: unknown;
+}
+
+/** `pane.get { pane_id }` narrowed to `{ type: "pane_info", pane }`; any other shape fails loudly (§6.J notes). */
+async function paneGet(paneId: string): Promise<PaneInfo> {
+  const result = await client.request("pane.get", { pane_id: paneId });
+  if (typeof result !== "object" || result === null) {
+    throw new Error(`pane.get returned a non-object result: ${JSON.stringify(result)}`);
+  }
+  const record = result as Record<string, unknown>;
+  if (record["type"] !== "pane_info" || typeof record["pane"] !== "object" || record["pane"] === null) {
+    throw new Error(`pane.get did not return a pane_info envelope: ${JSON.stringify(result)}`);
+  }
+  return record["pane"] as PaneInfo;
+}
+
+/** Poll `pane.get` every `intervalMs` until `predicate(pane)` holds or `budgetMs` elapses; on timeout, throws loudly with the last observed pane JSON. */
+async function pollUntil(
+  paneId: string,
+  predicate: (pane: PaneInfo) => boolean,
+  budgetMs: number,
+  intervalMs = 500,
+): Promise<PaneInfo> {
+  const start = Date.now();
+  let last: PaneInfo | undefined;
+  for (;;) {
+    last = await paneGet(paneId);
+    if (predicate(last)) return last;
+    if (Date.now() - start > budgetMs) {
+      throw new Error(`pollUntil timed out after ${budgetMs}ms; last observed pane: ${JSON.stringify(last)}`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 afterAll(async () => {
   await Promise.all(
@@ -138,5 +180,149 @@ describe("RFC 0012 Phase 2 §5.J — real Herdr smoke (npm run test:herdr)", () 
     const panes = record["panes"] as Array<Record<string, unknown>>;
     const paneIds = panes.map((p) => p["pane_id"]);
     expect(paneIds).not.toContain(j5PaneId);
+  });
+
+  it("J7 metadata then agent-lifecycle reports derive idle/working/done on a node-rooted sleeper pane", async () => {
+    const pane = herdrEnv();
+    if (pane === null) throw new Error("unreachable: the module-level guard already asserted the pane env");
+    const paneId = await client.layoutApplyPane({
+      workspaceId: pane.workspaceId,
+      tabLabel: "pi-theta-herdr live J7",
+      command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"],
+      cwd: process.cwd(),
+      env: { PI_THETA_HERDR_LIVE: "1" },
+    });
+    createdPaneIds.push(paneId);
+
+    await client.paneReportMetadata(paneId, { source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: 1, displayAgent: "live-meta" });
+    let observed = await paneGet(paneId);
+    expect(observed["display_agent"]).toBe("live-meta");
+    // Pin-after-first-run (Flag F25): record whether `agent` is already "pi" from
+    // metadata alone, or still null pending the first pane.report_agent.
+    // eslint-disable-next-line no-console
+    console.log(`J7 pin-after-first-run: pane.agent after metadata alone = ${JSON.stringify(observed["agent"])}`);
+
+    await client.paneReportAgent(paneId, { source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: 2, state: "idle" });
+    observed = await paneGet(paneId);
+    expect(observed["agent_status"]).toBe("idle");
+    expect(observed["agent"]).toBe("pi");
+
+    await client.paneReportAgent(paneId, { source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: 3, state: "working" });
+    observed = await paneGet(paneId);
+    expect(observed["agent_status"]).toBe("working");
+
+    await client.paneReportAgent(paneId, { source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: 4, state: "idle" });
+    observed = await paneGet(paneId);
+    expect(observed["agent_status"]).toBe("done");
+
+    await client.paneClose(paneId);
+  });
+
+  it("J8 the child role end to end: parent metadata, then the child's own session_start reports", async () => {
+    const pane = herdrEnv();
+    if (pane === null) throw new Error("unreachable: the module-level guard already asserted the pane env");
+
+    const overridePiCli = process.env["PI_THETA_HERDR_LIVE_PI_CLI"];
+    const PI_CLI = overridePiCli ?? join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+    if (!existsSync(PI_CLI)) {
+      throw new Error(
+        `J8 requires a pi CLI entry to exist at ${PI_CLI} (set PI_THETA_HERDR_LIVE_PI_CLI to override; the default is the companion's own devDependency)`,
+      );
+    }
+    const piThetaRoot = join(ROOT, "node_modules", "@bitmonk8", "pi-theta");
+    if (!existsSync(piThetaRoot)) {
+      throw new Error(`J8 requires the companion's pi-theta devDependency at ${piThetaRoot}`);
+    }
+
+    const bogusLaunchPath = join(os.tmpdir(), `pi-theta-herdr-live-absent-${process.pid}`, "launch.json");
+
+    const backend = createHerdrPlacementBackend();
+    const placed = await backend.place({
+      execPath: process.execPath,
+      args: [
+        PI_CLI,
+        "-ne",
+        "-e",
+        ROOT,
+        "-e",
+        piThetaRoot,
+        "--theta-launch",
+        bogusLaunchPath,
+        "--name",
+        "live-child-tui",
+        "--no-session",
+      ],
+      cwd: ROOT,
+      env: { ...process.env, PI_THETA_HERDR_REPORT: "1" },
+      label: "live-child",
+      presentation: "visible",
+      launchFile: undefined,
+      context: { invokeDepth: 0, parallel: false },
+    });
+    createdPaneIds.push(placed.handle);
+
+    try {
+      // Phase 1: the parent's own D20 metadata report.
+      await pollUntil(placed.handle, (pane) => pane["display_agent"] === "live-child", 5_000);
+
+      // Phase 2: the child's own session_start reports (D13-D17).
+      const observed = await pollUntil(
+        placed.handle,
+        (pane) => {
+          const session = pane["agent_session"] as Record<string, unknown> | null | undefined;
+          return (
+            pane["display_agent"] === "live-child-tui" &&
+            pane["agent"] === "pi" &&
+            pane["agent_status"] === "idle" &&
+            session?.["source"] === "pi-theta-herdr" &&
+            session?.["kind"] === "id"
+          );
+        },
+        45_000,
+      );
+      // eslint-disable-next-line no-console
+      console.log(
+        `J8: terminal_title=${JSON.stringify(observed["terminal_title"])}`,
+      );
+      const agentList = await client.request("agent.list", {});
+      // eslint-disable-next-line no-console
+      console.log(`J8: herdr agent list includes the pane = ${JSON.stringify(agentList).includes(placed.handle)}`);
+    } finally {
+      placed.kill();
+    }
+  }, 60_000);
+
+  it("J9 the herdr:pi-source premise: a report under herdr:pi on a node-rooted pane is acked but not applied; a custom source is applied", async () => {
+    const pane = herdrEnv();
+    if (pane === null) throw new Error("unreachable: the module-level guard already asserted the pane env");
+    const paneId = await client.layoutApplyPane({
+      workspaceId: pane.workspaceId,
+      tabLabel: "pi-theta-herdr live J9",
+      command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"],
+      cwd: process.cwd(),
+      env: { PI_THETA_HERDR_LIVE: "1" },
+    });
+    createdPaneIds.push(paneId);
+
+    await client.request("pane.report_agent", {
+      pane_id: paneId,
+      source: "herdr:pi",
+      agent: "pi",
+      seq: Date.now() * 1000,
+      state: "working",
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    const afterHerdrPi = await paneGet(paneId);
+    if (afterHerdrPi["agent_status"] === "working") {
+      throw new Error(
+        `J9 pin-after-first-run: a herdr:pi report on a node-rooted pane was applied (agent_status=working) - Herdr changed; re-evaluate §5.5`,
+      );
+    }
+    expect(afterHerdrPi["agent_status"]).not.toBe("working");
+
+    await client.paneReportAgent(paneId, { source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: Date.now() * 1000, state: "working" });
+    await pollUntil(paneId, (pane) => pane["agent_status"] === "working", 5_000);
+
+    await client.paneClose(paneId);
   });
 });

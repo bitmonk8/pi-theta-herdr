@@ -129,6 +129,48 @@ describe("§5.I package.json dependency discipline and manifest pins", () => {
     expect(herdrConfig.default.test.include).toEqual(["tests/herdr-live/**/*.test.ts"]);
   });
 
+  it("R1 version is 0.2.0, and CHANGELOG.md lists [0.2.0] above [0.1.0]", () => {
+    const pkg = readJson(join(ROOT, "package.json"));
+    expect(pkg["version"]).toBe("0.2.0");
+    const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+    const idx020 = changelog.indexOf("## [0.2.0]");
+    const idx010 = changelog.indexOf("## [0.1.0]");
+    expect(idx020, "CHANGELOG.md has no '## [0.2.0]' heading").toBeGreaterThanOrEqual(0);
+    expect(idx010, "CHANGELOG.md has no '## [0.1.0]' heading").toBeGreaterThanOrEqual(0);
+    expect(idx020).toBeLessThan(idx010);
+  });
+
+  it("R2 src/herdr-child-reporter.ts exists and is subject to the I2/I3 audits (no bare import, no module-level mutable state)", () => {
+    const path = join(ROOT, "src", "herdr-child-reporter.ts");
+    const files = walkTsFiles(join(ROOT, "src"));
+    expect(files).toContain(path);
+    const lines = readFileSync(path, "utf8").split("\n");
+    const violations: string[] = [];
+    lines.forEach((line, i) => {
+      const match = /\bfrom\s+["']([^"']+)["']/.exec(line);
+      if (match) {
+        const specifier = match[1]!;
+        const isNodeBuiltin = specifier.startsWith("node:");
+        const isRelativeTs = (specifier.startsWith("./") || specifier.startsWith("../")) && specifier.endsWith(".ts");
+        const isTypeOnlyBareAllowed =
+          /^\s*import\s+type\b/.test(line) &&
+          (specifier.startsWith("@bitmonk8/pi-theta/src/") || specifier === "@earendil-works/pi-coding-agent");
+        if (!isNodeBuiltin && !isRelativeTs && !isTypeOnlyBareAllowed) violations.push(`${i + 1}: ${specifier}`);
+      }
+      if (/\brequire\s*\(/.test(line)) violations.push(`${i + 1}: require(`);
+      if (/^(export\s+)?(let|var)\s+\w/.test(line)) violations.push(`${i + 1}: top-level let/var`);
+      if (/^(export\s+)?const\s+\w+\s*=\s*new\s+(Map|Set)\s*\(/.test(line)) violations.push(`${i + 1}: top-level new Map/Set`);
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("R3 tests/herdr-live/** is still excluded from the default vitest config (I6 unchanged)", async () => {
+    const mainConfig = (await import(join(ROOT, "vitest.config.ts").replace(/\\/g, "/"))) as {
+      default: { test: { exclude?: readonly string[] } };
+    };
+    expect(mainConfig.default.test.exclude ?? []).toEqual(expect.arrayContaining(["tests/herdr-live/**"]));
+  });
+
   it("no silent skipping anywhere under tests/**", () => {
     const testsDir = join(ROOT, "tests");
     const files = walkTsFiles(testsDir);

@@ -8,7 +8,8 @@ D5). With it loaded, every subagent child pi-theta launches — a `mode:
 subagent` slash command, an `invoke(...)` call, a `.theta` callable, a `par
 for` iteration, or a `subagent fn` call — opens as a tab in the parent's
 Herdr workspace instead of running headless: the tab closes itself when the
-child returns `Ok`, and lingers, un-retitled, when it returns `Err` (v0.1.0).
+child returns `Ok`, and lingers — labelled in Herdr's agents list but not
+retitled — when it returns `Err`.
 The same repository is the home of the Herdr NDJSON client that pi-config's
 `subagent` tool imports (`src/herdr-client.ts`).
 
@@ -20,6 +21,9 @@ The same repository is the home of the Herdr NDJSON client that pi-config's
   `apiVersion: 1`.
 - Windows: Herdr's control socket is a named pipe
   (`\\.\pipe\<HERDR_SOCKET_PATH>`); the client handles this transparently.
+- pi-config ≥ `2d6ffb0` for child-side reporting (*Agents-list
+  integration*) — the companion must be loaded inside the child's own
+  `pi.extensions`, not carried in via a parent's `-e`.
 
 ## Install
 
@@ -52,10 +56,14 @@ pi-config's own dependencies.
   process it spawns: `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`,
   `HERDR_WORKSPACE_ID`. All four present, or the backend reports itself
   unavailable.
-- **Placement.** `place()` issues one `layout.apply` request: an argv spawn,
+- **Placement.** `place()` issues a `layout.apply` request: an argv spawn,
   a `cwd`, an environment overlay (D4), `tab_label` set to the callee's
   label, `focus: false`, and the parent's `workspace_id` — the child opens as
-  a background tab in the same workspace, never stealing focus.
+  a background tab in the same workspace, never stealing focus. Immediately
+  after `layout.apply` resolves, `place()` also issues one unawaited
+  `pane.report_metadata { display_agent: <label> }` so the pane carries its
+  label in Herdr's agents list from the first frame — see *Agents-list
+  integration*.
 - **Priority and `auto`.** pi-theta's `auto` placement selection orders
   candidate backends and picks `herdr` when its `detect()` succeeds inside a
   Herdr pane, falling back to the built-in `pipe` backend otherwise.
@@ -65,15 +73,105 @@ pi-config's own dependencies.
 - **`kill()`** issues `pane.close` against the pane Herdr assigned to the
   child.
 - **Exit and lifecycle.** `Ok` closes the child's own tab; `Err` leaves the
-  tab open and un-retitled in v0.1.0 so its output stays inspectable. The
-  backend reports `observesExit: false`: pi-theta settles the child from its
-  own loopback result channel rather than from process exit, with a
-  heartbeat-silence budget of 30 seconds, so a lingering `Err` tab is never
-  torn down by teardown logic.
+  tab open, still not retitled — a retitle needs an outcome signal that does
+  not exist yet and is planned as a pi-theta hook for the companion's 0.3.0 —
+  so its output stays inspectable. The backend reports `observesExit: false`:
+  pi-theta settles the child from its own loopback result channel rather than
+  from process exit, with a heartbeat-silence budget of 30 seconds, so a
+  lingering `Err` tab is never torn down by teardown logic.
 - **Environment overlay (D4).** The child inherits the parent's environment
   plus an overlay of string-valued variables the caller supplied; Herdr's own
   pane injection (`HERDR_PANE_ID`, etc.) always wins for the child's own
   identity.
+
+## Agents-list integration
+
+### Why the companion reports
+
+Herdr's own pi integration (`~/.pi/agent/extensions/herdr-agent-state.ts`,
+`source: herdr:pi`) loads inside every pi process on this machine that does
+not pass `-ne` — theta children included. Observed on Herdr 0.8.0:
+`herdr:pi`'s reports from inside a theta child were acknowledged but not
+applied (`agent: null`, `agent_status: unknown` in the 0.1.0 smoke — see
+*Verified on real Herdr*), while reports under a custom `source` on the same
+kind of node-rooted pane are applied (pi-config's `pi-subagent` panes and the
+`probe:cli` control). A control report issued with
+`herdr pane report-agent … --source herdr:pi` on such a pane was
+acknowledged and not applied, and the same report under `--source probe:cli`
+was applied (coordinator experiment, 2026-09-16, Herdr 0.8.0 protocol 20).
+pi-config attributes this to root-process detection; the companion pins the
+observation with the opt-in suite's real-Herdr rows and does not depend on
+the cause. Because pi-config's `pi.extensions` loads this package inside the
+child too, the child reports from inside its own pane under
+`source: "pi-theta-herdr"`, `agent: "pi"`.
+
+### What is reported, when
+
+`place()` issues `pane.report_metadata { display_agent: <label> }` right
+after `layout.apply` resolves, so the tab carries its label before the child
+boots. The child — only when `--theta-launch` is on its argv, the four
+`HERDR_*` pane markers are set, and `ctx.mode === "tui"` — reports at
+`session_start`: `display_agent`, the session id (plus the session file path
+when one exists), and `idle`/`working` from `ctx.isIdle()`; `working` at
+every `agent_start`; `idle` at every `agent_settled` that leaves the session
+idle. `PI_THETA_HERDR_REPORT=0` in the environment (inherited by children
+through the D4 overlay) turns the companion's child-side reporting off
+without uninstalling the package.
+
+### What the sidebar shows over a child's life
+
+`idle` at boot, `working` during each model turn, `done` between turns and
+after the last one — Herdr derives `done` from a `working → idle`
+transition; it is not a value the companion sends. An `Ok` child's tab
+closes itself right after its last turn settles. An `Err` child's tab stays
+open — labelled, showing `done` or `idle`, not retitled `FAILED`: the child
+has no way to distinguish `Ok` from `Err` (pi-theta signals nothing at the
+`Err` end), and every "idle for N seconds" heuristic was rejected because a
+theta sits idle between its own turns for as long as its tools and children
+take. A theta pane still present after its parent finished is an `Err`
+linger (or a human continuing it) — retitling that pane arrives with a
+planned pi-theta outcome hook, targeted for the companion's 0.3.0.
+
+### Coexistence with `herdr:pi`
+
+Today `herdr:pi`'s reports on a theta pane are acknowledged but ignored, so
+the companion is the only source Herdr applies. If a later Herdr version
+honours `herdr:pi` on node-rooted panes too, both sources publish the same
+`working`/`idle` transitions from the same pi events; `pane.get`'s
+`agent_session.source` shows which source Herdr took. `display_agent` comes
+only from the companion — `herdr:pi` never calls `pane.report_metadata`.
+
+### Caveats
+
+`-e` is not propagated to children: a checkout smoke (`pi -e <checkout>`)
+exercises only the parent-side label from `place()`; child-side reporting
+needs the companion installed as a package in the child's own configuration
+(pi-config ≥ `2d6ffb0`). Failures are silent by design — a TUI child must
+not write to its own pane — so verify with `herdr pane get <id>` or
+`npm run test:herdr`. `blocked` is never reported: nothing on this machine
+emits a `blocked` state for a pi process. An `exec`-placed child inside a
+Herdr pane inherits its mux server's `HERDR_*` variables and would report
+onto that pane instead of its own — an exposure shared with every Herdr
+integration.
+
+### Expected `herdr agent list` timeline (to be re-observed in the 0.2.0 smoke)
+
+Drawn from the Phase 2D-bis smoke procedure's `herdr-smoke.theta` driver
+(`par for … max 2` over two `Ok` workers, then one `Err` worker), polled
+every 2 seconds; times are relative to the parent's dispatch. `W1`/`W2` are
+the `Ok` workers, `E` is the `Err` worker.
+
+| t | Pane | Expected row | Source of the change |
+|---|---|---|---|
+| ≈+1 s | W1, W2 appear | `display_agent` already set; `agent_status: unknown` | parent `place()` |
+| ≈+4 s | W1, W2 | `agent: "pi"`, `agent_status: idle`, `agent_session.source: "pi-theta-herdr"` | child `session_start` |
+| ≈+5 s | W1, W2 | `agent_status: working` | first `@` turn → `agent_start` |
+| ≈+8–12 s | W1, W2 | `agent_status: done` briefly, then the pane disappears | `agent_settled` → `idle`; `Ok` → tab closes |
+| ≈+12 s | E appears | as W1/W2 at +1 s, label `herdr-smoke-failing-worker#<id8>` | parent `place()` |
+| ≈+16 s | E | `idle` with `agent_session.source: "pi-theta-herdr"` | child `session_start` |
+| ≈+17 s | E | `working` | its one `@` turn |
+| ≈+20 s | E | `done` | the turn settled; the theta then returns `Err` |
+| +30 s … +∞ | E | unchanged: `done`, labelled, no `FAILED` in `label`/`title` | no outcome signal reaches the child (the 0.3.0 hook is the planned fix) |
 
 ## Settings
 
@@ -110,7 +208,9 @@ original inline implementation threw for the same condition.
   and deterministic.
 - `npm run test:herdr` — opt-in; requires a running Herdr daemon and this
   process to sit in a Herdr pane (`config/vitest/vitest.herdr.config.ts`).
-  Run it whenever the client or backend changes.
+  Run it whenever the client or backend changes. Rows J7–J9 exercise the
+  agents-list derivation on a node-rooted pane, the child role end to end,
+  and the `herdr:pi` premise this package's reporting depends on.
 - `npm run typecheck` — `tsc -p tsconfig.json --noEmit`.
 
 Neither suite silently skips: a missing pane environment fails the opt-in
@@ -166,7 +266,8 @@ pane as `MSYS_NO_PATHCONV=1 PI_THETA_HERDR_SMOKE=1 pi --approve --no-session
   agent list` did not list the child panes at all, and `herdr pane list`
   reported `agent: null`, `agent_status: "unknown"`, `display_agent: null`
   for them, versus `agent: "pi"` (source `herdr:pi`) for top-level pi panes.
-  `place()` reports nothing to Herdr's agent tracking in v0.1.0.
+  `place()` reports nothing to Herdr's agent tracking in v0.1.0 (0.2.0
+  reports — see *Agents-list integration*).
 - Instead, the sidebar surface that does move is the pane title: it went
   `pi` → `π - herdr-smoke-worker - herdr-smoke` at t+8 s, carrying pi's
   `--name` label. `herdr tab list` reports the tab `label` as the callee

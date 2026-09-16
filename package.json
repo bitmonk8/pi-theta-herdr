@@ -1,6 +1,6 @@
 {
   "name": "@bitmonk8/pi-theta-herdr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Herdr placement backend for pi-theta (RFC 0012): runs each subagent child as a tab in the parent's Herdr workspace, and ships the Herdr NDJSON client pi-config's subagent tool shares.",
   "keywords": ["pi-package", "pi-theta", "herdr", "subagent", "placement", "multiplexer"],

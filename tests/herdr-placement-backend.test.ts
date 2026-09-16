@@ -10,11 +10,19 @@ import {
 } from "../src/herdr-placement-backend.ts";
 import {
   HerdrRequestError,
+  HERDR_REPORT_AGENT,
+  HERDR_REPORT_SOURCE,
   type HerdrClient,
   type HerdrPaneEnv,
   type LayoutApplyPaneInput,
+  type PaneAgentReport,
+  type PaneAgentSessionReport,
   type PaneMetadata,
 } from "../src/herdr-client.ts";
+
+const NOW = 1_700_000_000_000;
+const S = HERDR_REPORT_SOURCE;
+const A = HERDR_REPORT_AGENT;
 
 const PANE: HerdrPaneEnv = { socketPath: "s", paneId: "w1:p2", workspaceId: "w7" };
 
@@ -57,6 +65,8 @@ interface FakeClient extends HerdrClient {
     readonly paneClose: string[];
     readonly paneRename: { paneId: string; label: string }[];
     readonly paneReportMetadata: { paneId: string; metadata: PaneMetadata }[];
+    readonly paneReportAgent: { paneId: string; report: PaneAgentReport }[];
+    readonly paneReportAgentSession: { paneId: string; report: PaneAgentSessionReport }[];
   };
 }
 
@@ -67,6 +77,8 @@ function fakeClient(overrides: Partial<HerdrClient> = {}): FakeClient {
     paneClose: [] as string[],
     paneRename: [] as { paneId: string; label: string }[],
     paneReportMetadata: [] as { paneId: string; metadata: PaneMetadata }[],
+    paneReportAgent: [] as { paneId: string; report: PaneAgentReport }[],
+    paneReportAgentSession: [] as { paneId: string; report: PaneAgentSessionReport }[],
   };
   const base: FakeClient = {
     calls,
@@ -88,6 +100,12 @@ function fakeClient(overrides: Partial<HerdrClient> = {}): FakeClient {
     paneReportMetadata: vi.fn(async (paneId: string, metadata: PaneMetadata) => {
       calls.paneReportMetadata.push({ paneId, metadata });
     }),
+    paneReportAgent: vi.fn(async (paneId: string, report: PaneAgentReport) => {
+      calls.paneReportAgent.push({ paneId, report });
+    }),
+    paneReportAgentSession: vi.fn(async (paneId: string, report: PaneAgentSessionReport) => {
+      calls.paneReportAgentSession.push({ paneId, report });
+    }),
   };
   return { ...base, ...overrides, calls };
 }
@@ -101,10 +119,17 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<vo
 }
 
 describe("§5.E layoutApplyPane / place()", () => {
-  it("E1 place() sends exactly one layoutApplyPane call with the overlay-filtered env, and touches no other client method", async () => {
+  it("E1 (amended, D20) place() sends exactly one layoutApplyPane call with the overlay-filtered env, and exactly one paneReportMetadata besides", async () => {
+    // Amendment (seam sheet §6.P, row "E1 (amended)"): the pre-0.2.0 row read
+    // "…and touches no other client method" with
+    // `expect(client.paneReportMetadata).not.toHaveBeenCalled()`. D20 makes
+    // `place()` issue one unawaited `pane.report_metadata` right after
+    // `layout.apply` resolves, so that assertion is deleted and replaced with
+    // the P1 shape below; `request`, `paneClose`, `paneRename` are still untouched.
     const client = fakeClient();
-    const backend = createHerdrPlacementBackend({ client });
+    const backend = createHerdrPlacementBackend({ client, now: () => NOW });
     await backend.place(sampleRequest());
+    await waitUntil(() => client.calls.paneReportMetadata.length === 1);
     expect(client.layoutApplyPane).toHaveBeenCalledTimes(1);
     expect(client.calls.layoutApplyPane[0]).toEqual({
       workspaceId: "w7",
@@ -124,10 +149,14 @@ describe("§5.E layoutApplyPane / place()", () => {
       cwd: "C:\\p",
       env: { PATH: "x", ANTHROPIC_API_KEY: "sk" },
     });
+    expect(client.calls.paneReportMetadata).toEqual([
+      { paneId: "w1:p9", metadata: { source: S, agent: A, seq: NOW * 1000, displayAgent: "worker" } },
+    ]);
     expect(client.request).not.toHaveBeenCalled();
     expect(client.paneClose).not.toHaveBeenCalled();
     expect(client.paneRename).not.toHaveBeenCalled();
-    expect(client.paneReportMetadata).not.toHaveBeenCalled();
+    expect(client.paneReportAgent).not.toHaveBeenCalled();
+    expect(client.paneReportAgentSession).not.toHaveBeenCalled();
   });
 
   it("E2 paneEnvOverlay drops undefined/`=`/empty keys and every HERDR_* key, preserving value bytes verbatim", () => {
@@ -470,6 +499,147 @@ describe("§5.E layoutApplyPane / place()", () => {
     expect(JSON.stringify(input)).not.toContain("invokeDepth");
     expect(JSON.stringify(input)).not.toContain("presentation");
     expect(JSON.stringify(input)).not.toContain("launchFile");
+  });
+});
+
+describe("§6.P parent place() reporting (D20)", () => {
+  it("P1 exactly one paneReportMetadata call, the exact D20 shape, and no other new client method touched", async () => {
+    const client = fakeClient();
+    const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+    await backend.place(sampleRequest());
+    await waitUntil(() => client.calls.paneReportMetadata.length === 1);
+    expect(client.calls.paneReportMetadata).toEqual([
+      { paneId: "w1:p9", metadata: { source: S, agent: A, seq: 1_700_000_000_000_000, displayAgent: "worker" } },
+    ]);
+    expect(client.layoutApplyPane).toHaveBeenCalledTimes(1);
+    expect(client.paneReportAgent).not.toHaveBeenCalled();
+    expect(client.paneReportAgentSession).not.toHaveBeenCalled();
+    expect(client.paneRename).not.toHaveBeenCalled();
+    expect(client.paneClose).not.toHaveBeenCalled();
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("P2 against the real fake daemon, the second request is pane.report_metadata with the exact wire params", async () => {
+    const { startFakeHerdrServer } = await import("./helpers/fake-herdr-server.ts");
+    const { createHerdrClient } = await import("../src/herdr-client.ts");
+    const fake = await startFakeHerdrServer();
+    try {
+      fake.script((request, socket) => {
+        if (request.method === "layout.apply") {
+          socket.write(
+            `${JSON.stringify({ id: request.id, result: { layout: { root: { type: "pane", pane_id: "w1:p9" } } } })}\n`,
+          );
+          socket.end();
+          return;
+        }
+        socket.write(`${JSON.stringify({ id: request.id, result: { type: "ok" } })}\n`);
+        socket.end();
+      });
+      const client = createHerdrClient({ env: fake.env });
+      const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+      await backend.place(sampleRequest());
+      await waitUntil(() => fake.requests.length === 2);
+      expect(fake.requests[0]!.method).toBe("layout.apply");
+      expect(fake.requests[1]!.method).toBe("pane.report_metadata");
+      expect(fake.requests[1]!.params).toEqual({
+        pane_id: "w1:p9",
+        source: S,
+        agent: A,
+        seq: NOW * 1000,
+        display_agent: "worker",
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("P3 place() resolves before paneReportMetadata's own promise settles (the report is not awaited)", async () => {
+    let resolveReport: (() => void) | undefined;
+    const reportPromise = new Promise<void>((resolve) => {
+      resolveReport = resolve;
+    });
+    let reportSettled = false;
+    void reportPromise.then(() => {
+      reportSettled = true;
+    });
+    const client = fakeClient({ paneReportMetadata: (): Promise<void> => reportPromise });
+    const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+    const placed = await backend.place(sampleRequest());
+    expect(placed.handle).toBe("w1:p9");
+    expect(reportSettled).toBe(false);
+    resolveReport!();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(reportSettled).toBe(true);
+  });
+
+  it("P4 a refused paneReportMetadata rejection is swallowed and never surfaces as an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // Plain function, NOT `vi.fn(...)` (the tinyspy-vacuous-trap review note, as F3/F4).
+      const client = fakeClient({
+        paneReportMetadata: (): Promise<void> =>
+          Promise.reject(new HerdrRequestError("herdr pane.report_metadata: refused", "pane.report_metadata", "refused")),
+      });
+      const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+      const placed = await backend.place(sampleRequest());
+      expect(placed.handle).toBe("w1:p9");
+      expect(placed.capabilities).toEqual({ observesExit: false, inheritsEnv: true, visible: true });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("P5 a rejected layoutApplyPane never issues a paneReportMetadata call", async () => {
+    const timeoutError = new HerdrRequestError("herdr layout.apply timed out after 15000ms", "layout.apply", "timeout");
+    const client = fakeClient({ layoutApplyPane: vi.fn(async () => Promise.reject(timeoutError)) });
+    const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+    await expect(backend.place(sampleRequest())).rejects.toBeInstanceOf(HerdrPlacementError);
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(client.paneReportMetadata).not.toHaveBeenCalled();
+  });
+
+  it("P6 kill() still issues only pane.close; no report on kill", async () => {
+    const client = fakeClient();
+    const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+    const placed = await backend.place(sampleRequest());
+    await waitUntil(() => client.calls.paneReportMetadata.length === 1);
+    placed.kill();
+    await waitUntil(() => client.calls.paneClose.length === 1);
+    expect(client.calls.paneClose).toEqual(["w1:p9"]);
+    expect(client.paneReportAgent).not.toHaveBeenCalled();
+    expect(client.paneReportAgentSession).not.toHaveBeenCalled();
+    expect(client.calls.paneReportMetadata).toHaveLength(1);
+  });
+
+  it("P7 a synchronous throw from paneReportMetadata does not fail the spawn (the D20 try/catch)", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // Plain function, NOT `vi.fn(...)` (the tinyspy-vacuous-trap review note, as F3/F4).
+      const client = fakeClient({
+        paneReportMetadata: (): Promise<void> => {
+          throw new Error("sync boom");
+        },
+      });
+      const backend = createHerdrPlacementBackend({ client, now: () => NOW });
+      const placed = await backend.place(sampleRequest());
+      expect(placed.handle).toBe("w1:p9");
+      expect(client.layoutApplyPane).toHaveBeenCalledTimes(1);
+      expect(client.paneClose).not.toHaveBeenCalled();
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });
 

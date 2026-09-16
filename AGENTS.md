@@ -41,3 +41,10 @@ this package's own `extensions/index.ts`. Nothing under `src/` may carry
 module-level mutable state, and no code may assume `instanceof` holds across
 graphs (a `HerdrRequestError` thrown in one graph is not the same class object
 in the other).
+
+## Child-side reporting rules
+
+- The child role reports only when `--theta-launch` is on `process.argv`
+  **and** a Herdr pane env is present **and** `ctx.mode === "tui"`.
+- Wording rule: describe Herdr's handling of `herdr:pi` as observed
+  behaviour, never as mechanism.
