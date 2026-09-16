@@ -140,15 +140,100 @@ marking a test skipped.
 
 ## Verified on real Herdr
 
-- [ ] Herdr version and API `protocol` observed.
-- [ ] `pane_id` shape observed from a real placement.
-- [ ] How the Herdr sidebar detects a theta child (process name, state
-  transitions).
-- [ ] Environment overlay confirmed reaching the child process.
-- [ ] Spawn-to-`live in herdr` and spawn-to-first-progress wall times.
-- [ ] Windows-specific observations (named-pipe path, argv quoting).
+Recorded 2026-09-16 against Herdr 0.8.0 (Windows, named pipe
+`C:\Users\thomasa\AppData\Roaming\herdr\herdr.sock`), pi 0.85.1, pi-theta
+0.476.0, this package at commit `4fd5ee3`. Driver: the seam sheet's §8.2
+`herdr-smoke.theta` (`par for` over two `herdr-smoke-worker` calls with
+`max 2`, then one `herdr-smoke-failing-worker`), run from inside a Herdr
+pane as `MSYS_NO_PATHCONV=1 PI_THETA_HERDR_SMOKE=1 pi --approve --no-session
+-e … -p "/herdr-smoke"`, observed with a 2-second `herdr pane list` poller.
 
-_Pending: filled in after the Phase 2D smoke._
+### Version and detection
+
+- Herdr version and API `protocol` observed: 0.8.0.
+- Registration is quiet on a normal TUI start with the companion loaded: no
+  `ignoring subagent placement registration` warning and no
+  `theta/load/subagent-placement-unavailable` note; the companion appears in
+  pi's `[Extensions]` list.
+
+### Placement and pane identity
+
+- `place()` opened two new panes (`w1:p2T5`, `w1:p2T6`) in the parent's
+  workspace by t+4 s (2 s poller granularity), `focused: false`, cwd equal
+  to the project directory.
+- The Herdr sidebar does not detect a theta child by process state: `herdr
+  agent list` did not list the child panes at all, and `herdr pane list`
+  reported `agent: null`, `agent_status: "unknown"`, `display_agent: null`
+  for them, versus `agent: "pi"` (source `herdr:pi`) for top-level pi panes.
+  `place()` reports nothing to Herdr's agent tracking in v0.1.0.
+- Instead, the sidebar surface that does move is the pane title: it went
+  `pi` → `π - herdr-smoke-worker - herdr-smoke` at t+8 s, carrying pi's
+  `--name` label. `herdr tab list` reports the tab `label` as the callee
+  slug (e.g. `herdr-smoke-failing-worker`); sibling fan-out tabs from the
+  same `par for` share one label — a pi-theta gap (F4) fixed upstream in
+  pi-theta 0.477.0 by appending `#<id8>`.
+- The `Err` child (`herdr-smoke-failing-worker`) opened a pane
+  (`w1:p2T7`) at t+12 s and is not retitled `FAILED …`; see Exit and
+  lifecycle below (v0.1.0; OQ5).
+
+### Environment overlay (D4)
+
+- Confirmed reaching the child process: `!echo` inside the lingering `Err`
+  pane printed `SMOKE=1` (the parent's `PI_THETA_HERDR_SMOKE` arrived
+  through `layout.apply`'s `root.env` overlay), `PANE=w1:p2T7` (Herdr's own
+  injection — the overlay strips `HERDR_*`), and an empty
+  `PI_THETA_SUBAGENT_ENTRY` (pi-theta scrubs its own control-plane variable
+  after reading the launch file).
+
+### Wall times and lifecycle
+
+- Both `Ok` tabs closed themselves at t+12 s, roughly 8 s after appearing,
+  once their result envelopes landed; the parent issued no `pane.close`.
+  Parent wall time for all three children was 27 s; the parent's own
+  arithmetic check reported `ok: herdr-smoke-worker summed correctly` twice.
+- The `Err` child's tab stayed open — the turn's answer and session footer
+  visible — until closed by hand 3 minutes later, well past the parent's
+  exit and the 30-second `HEARTBEAT_SILENCE` teardown budget; no
+  `subagent-teardown-timeout` note appeared, matching `observesExit: false`
+  keeping teardown off a lingering pane.
+
+### Placement overrides observed
+
+- `PI_THETA_SUBAGENT_PLACEMENT=pipe` with the companion loaded: no new panes
+  appeared during a 28 s run; the same three result lines came back, and the
+  failing child was torn down headless.
+- `theta.subagentPlacement` pinned to `"herdr"` with `HERDR_*` unset: with
+  the companion loaded, both `mode: subagent` thetas refused at load with
+  `theta/load/subagent-placement-unavailable: subagent placement 'herdr' is
+  unavailable: the backend is not detected in this environment` (hint text
+  present), and `/herdr-smoke`'s callable launches failed at runtime as `Err
+  invoke_infra`; without the companion loaded the reason read `no registered
+  backend has this name` instead.
+
+### Windows-specific observations
+
+- The named pipe path observed was `C:\Users\thomasa\AppData\Roaming\herdr\herdr.sock`
+  (via `\\.\pipe\<HERDR_SOCKET_PATH>` per `detect()`).
+- The run required `MSYS_NO_PATHCONV=1` ahead of the `pi` invocation to keep
+  the MSYS shell from rewriting the `-p "/herdr-smoke"` argument as a path.
+
+### Cross-process boundaries
+
+- A child pane loads pi-config's extensions, including pi-theta, but not the
+  `-e`-loaded companion — pi does not propagate `-e` to children — so a
+  grandchild spawned from that pane falls through to `pipe` until the
+  companion is installed as a package (pi-config Phase 2E).
+- Two load notes surfaced inside the child that are unrelated to placement,
+  recorded here for pi-theta: `theta/load/unknown-tool: unknown Pi tool
+  'theta_progress'` for the prompt-mode driver theta when discovered inside a
+  subagent child, and `theta/load/binder-model-unresolved` for the typed-query
+  worker (no `bind_model` set).
+
+### Opt-in suite
+
+- `npm run test:herdr` from inside a Herdr pane: 4 passed, 2 todo (J5/J6).
+  With `HERDR_ENV` unset, the suite throws at module top level naming the
+  missing variable rather than skipping.
 
 ## Licence
 

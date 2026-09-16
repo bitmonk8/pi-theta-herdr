@@ -28,3 +28,11 @@ protocol's `apiVersion` (RFC 0012 §5).
 - Offline test suite (fake Herdr daemon over `node:net`; conformance against
   `@bitmonk8/pi-theta`'s real seam) and the opt-in `npm run test:herdr`
   real-Herdr suite.
+
+### Verified
+- Real-Herdr smoke against Herdr 0.8.0 on Windows (commit `4fd5ee3`,
+  2026-09-16): `place()` opens the tab, the D4 environment overlay reaches
+  the child, `Ok` closes its own tab and `Err` lingers un-retitled past the
+  30-second `HEARTBEAT_SILENCE` budget, and `herdr agent list`/`herdr pane
+  list` do not surface theta children (`agent: null`). Full readout in
+  README's "Verified on real Herdr".
