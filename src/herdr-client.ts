@@ -13,8 +13,9 @@ export const HERDR_REQUEST_TIMEOUT_MS = 5000;
 
 /**
  * The companion's Herdr reporting identity. `source` names this package — a custom source,
- * which Herdr applies to any pane (its own `herdr:pi` source is honoured only on panes whose
- * root process Herdr detects as pi; a theta child's root is `node …/cli.js`). `agent` belongs
+ * which Herdr applies to any pane: observed on Herdr 0.8.0: reports from `herdr:pi` inside a
+ * theta child were acknowledged but not applied, while reports under this custom source on
+ * the same kind of pane are applied. `agent` belongs
  * only in `pane.report_agent` / `pane.report_agent_session`; observed on Herdr 0.8.0 (protocol
  * 20): a `pane.report_metadata` WITHOUT `agent` is applied, the same report WITH `agent: "pi"`
  * is acknowledged and NOT applied on panes whose root Herdr does not recognise as pi.

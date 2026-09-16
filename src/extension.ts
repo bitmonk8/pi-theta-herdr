@@ -42,7 +42,9 @@ export function probePlacementEventBus(events: unknown): PlacementEventBus | und
  * under the same name draws `theta/load/subagent-placement-invalid`); released
  * at `session_shutdown` (RFC §5; pi-theta's own `factory.ts` releases its offer
  * subscription there). No offer is emitted (Decision D8, §4.3). No `pi.events`
- * (an older host) ⇒ no-op: pi-theta then runs built-ins only.
+ * (an older host) ⇒ no-op: pi-theta then runs built-ins only. (The latch is
+ * redundant since pi-theta 0.477.0 made identical-object re-registration a
+ * no-op; kept for older pins.)
  */
 export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrPlacementDeps = {}): void {
   const events = probePlacementEventBus(host.events);

@@ -15,18 +15,24 @@ protocol's `apiVersion` (RFC 0012 §5).
   panes and the `probe:cli` control) — pi-config attributes this to root-process detection;
   this package pins the observation and does not depend on the cause. So
   a placed child now reports its own pane under `source: "pi-theta-herdr"`,
-  `agent: "pi"`: `pane.report_metadata { display_agent: <label> }`,
+  `agent: "pi"` (`agent: "pi"` travels only on `pane.report_agent` and
+  `pane.report_agent_session`; `pane.report_metadata` carries `source`, `seq`,
+  `display_agent`): `pane.report_metadata { display_agent: <label> }`,
   `pane.report_agent_session` (session id, plus the path when a session file exists) and
   `pane.report_agent` (`idle`/`working` from `ctx.isIdle()`) at `session_start`; `working`
   at `agent_start`; `idle` at an `agent_settled` that leaves the session idle. Child role =
   `--theta-launch` on argv + the four `HERDR_*` markers + `ctx.mode === "tui"`;
   `PI_THETA_HERDR_REPORT=0` opts out. Serial fire-and-forget sends, every failure swallowed,
-  5 s per-request deadline, `seq` = `Date.now()*1000 + n` per session; on
+  5 s per-request deadline, `seq` = `Date.now()*1000 + n` per session — observed on Herdr
+  0.8.0: reports with small literal `seq` values (1..4) were acknowledged and not applied;
+  wall-clock-based values are applied; on
   `session_shutdown { reason: "quit" }` the last in-flight report gets at most 1.5 s to land.
 - Client wrappers `paneReportAgent`, `paneReportAgentSession` (+ module-level forms),
   `HerdrAgentState` (`idle|working|blocked|unknown` — `done` is server-derived and not
   sendable), `HERDR_REPORT_SOURCE`, `HERDR_REPORT_AGENT`; `PaneMetadata` gains optional
-  `agent` and `seq`.
+  `seq`; it deliberately carries no `agent` — observed on Herdr 0.8.0 (protocol 20): a
+  `pane.report_metadata` with `agent: "pi"` on a pane Herdr does not recognise as pi was
+  acknowledged and not applied, while the same report without `agent` was applied.
 - `place()` reports `pane.report_metadata { display_agent: <label> }` right after
   `layout.apply` (fire-and-forget), so the tab is labelled before the child boots.
 - `SUBAGENT_LAUNCH_FLAG` / `findLaunchFlagOnArgv` carried as own literals in
@@ -44,8 +50,17 @@ protocol's `apiVersion` (RFC 0012 §5).
   is now labelled and shows pi-level `idle`/`working`/`done` in Herdr's agents list.
 
 ### Verified
-- (fill from the 0.2.0 smoke, README's *Agents-list integration* → *Expected `herdr
-  agent list` timeline*)
+- Real-Herdr smoke against Herdr 0.8.0 protocol 20 (pi-config carrying companion 0.2.0,
+  pi 0.85.1, pi-theta 0.477.0, 2026-09-16): three children from `herdr-smoke.theta`,
+  `herdr pane list` polled every second. The two `Ok` children reached `display_agent`
+  at t+3.2 s (parent `place()`), title `pi` at t+4.2 s, `agent: pi` / `agent_status: working`
+  at t+5.3 s (the child's own `session_start`/`agent_start` reports), `done` at t+7.6–8.8 s,
+  both panes gone by t+11.4 s. The `Err` child got `display_agent` at t+12.5 s, `agent: pi` /
+  `idle` at t+14.6 s, `working` at t+15.7 s, `done` at t+16.7 s, then lingers as `done` — no
+  `FAILED` retitle in 0.2.0 (arrives with the pi-theta outcome hook in 0.3.0). `herdr agent
+  list` listed all three children while alive. Opt-in suite `npm run test:herdr`: 9 rows
+  green (J7's F25 pin: `pane.agent` is `undefined` after metadata alone; J8: `agent_session`
+  absent). Full readout in README's *Verified on real Herdr (0.2.0)*.
 
 ## [0.1.0]
 

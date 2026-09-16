@@ -40,7 +40,8 @@ once in one pi process — once via pi-config's `subagent` extension, once via
 this package's own `extensions/index.ts`. Nothing under `src/` may carry
 module-level mutable state, and no code may assume `instanceof` holds across
 graphs (a `HerdrRequestError` thrown in one graph is not the same class object
-in the other).
+in the other). Reporter state lives in the factory closure; handlers are
+released by the `active` latch at `session_shutdown`, not by unsubscription.
 
 ## Child-side reporting rules
 

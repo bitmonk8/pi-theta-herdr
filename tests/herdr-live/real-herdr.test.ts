@@ -278,7 +278,10 @@ describe("RFC 0012 Phase 2 §5.J — real Herdr smoke (npm run test:herdr)", () 
       // pane.report_agent_session under the custom source is acknowledged but
       // `agent_session` stays absent from pane.get, while display_agent / agent /
       // agent_status from the same source are applied. Recorded, not required.
-      expect(observed["agent_session"] ?? null).toBeNull();
+      // eslint-disable-next-line no-console
+      console.log(
+        `J8 observed agent_session = ${JSON.stringify(observed["agent_session"] ?? null)} (Herdr 0.8.0: absent; re-evaluate the README if this changes)`,
+      );
       // eslint-disable-next-line no-console
       console.log(
         `J8: terminal_title=${JSON.stringify(observed["terminal_title"])}`,

@@ -36,22 +36,19 @@ const CHILD_ARGV = [
   "/worker",
 ];
 
-// Seam sheet §6.J's own transcription of the real child argv (the `--theta-launch`
-// / `--name` order `assembleSubagentArgv` produces for a visible-presentation
-// child; see §6.J notes and D22). Ambiguity: the exact byte-for-byte S7 argv
-// from the facts manifest was not in this task's inputs — transcribed in the
-// shape every other conformance row in this suite (H8, launcher-seam.test.ts)
-// observes from the real launcher, not invented independently.
+// Transcription of the facts manifest's S7 shape: the real child argv order
+// (`--theta` … `--theta-launch` … `--name` … `--no-session` …) as
+// `assembleSubagentArgv` produces it for a visible-presentation child.
 const S7_ARGV = [
   "C:\\node\\node.exe",
   "C:\\pi\\dist\\cli.js",
   "--theta",
   "C:\\p\\.pi\\theta",
+  "--theta-launch",
+  "C:\\tmp\\l\\launch.json",
   "--name",
   "worker",
   "--no-session",
-  "--theta-launch",
-  "C:\\tmp\\l\\launch.json",
   "/worker",
 ];
 

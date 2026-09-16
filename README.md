@@ -118,6 +118,21 @@ idle. `PI_THETA_HERDR_REPORT=0` in the environment (inherited by children
 through the D4 overlay) turns the companion's child-side reporting off
 without uninstalling the package.
 
+Observed on Herdr 0.8.0 (protocol 20): the child's `pane.report_agent_session`
+under `source: "pi-theta-herdr"` is acknowledged, but `pane.get` shows no
+`agent_session` for the pane; `display_agent`, `agent` and `agent_status` from
+the same source are applied. The companion sends the session report
+regardless and does not depend on it.
+
+`PaneMetadata` deliberately carries no `agent` field (`agent: "pi"` travels
+only on `pane.report_agent` and `pane.report_agent_session`; `pane.report_metadata`
+carries `source`, `seq`, `display_agent`) — observed on Herdr 0.8.0: a
+`pane.report_metadata` with `agent: "pi"` on a pane Herdr does not recognise
+as pi was acknowledged and not applied, while the same report without `agent`
+was applied. `seq` = `Date.now()*1000 + n` per session — observed on Herdr
+0.8.0: reports with small literal `seq` values (1..4) were acknowledged and
+not applied; wall-clock-based values are applied.
+
 ### What the sidebar shows over a child's life
 
 `idle` at boot, `working` during each model turn, `done` between turns and
@@ -138,8 +153,10 @@ Today `herdr:pi`'s reports on a theta pane are acknowledged but ignored, so
 the companion is the only source Herdr applies. If a later Herdr version
 honours `herdr:pi` on node-rooted panes too, both sources publish the same
 `working`/`idle` transitions from the same pi events; `pane.get`'s
-`agent_session.source` shows which source Herdr took. `display_agent` comes
-only from the companion — `herdr:pi` never calls `pane.report_metadata`.
+`agent_session.source` shows which source Herdr took — when Herdr records
+one: on Herdr 0.8.0 none appeared for the companion's own reports.
+`display_agent` comes only from the companion — `herdr:pi` never calls
+`pane.report_metadata`.
 
 ### Caveats
 
@@ -152,7 +169,8 @@ not write to its own pane — so verify with `herdr pane get <id>` or
 emits a `blocked` state for a pi process. An `exec`-placed child inside a
 Herdr pane inherits its mux server's `HERDR_*` variables and would report
 onto that pane instead of its own — an exposure shared with every Herdr
-integration.
+integration. Windows `agent_session_path` resume behaviour is unverified
+(the session report is not applied by Herdr 0.8.0 anyway).
 
 ### Expected `herdr agent list` timeline (to be re-observed in the 0.2.0 smoke)
 
@@ -163,15 +181,40 @@ the `Ok` workers, `E` is the `Err` worker.
 
 | t | Pane | Expected row | Source of the change |
 |---|---|---|---|
-| ≈+1 s | W1, W2 appear | `display_agent` already set; `agent_status: unknown` | parent `place()` |
-| ≈+4 s | W1, W2 | `agent: "pi"`, `agent_status: idle`, `agent_session.source: "pi-theta-herdr"` | child `session_start` |
+| ≈+1 s | W1, W2 appear | `display_agent` already set; `agent_status: unknown`; `agent`: absent until the child's first `pane.report_agent` (observed) | parent `place()` |
+| ≈+4 s | W1, W2 | `agent: "pi"`, `agent_status: idle` | child `session_start` |
 | ≈+5 s | W1, W2 | `agent_status: working` | first `@` turn → `agent_start` |
 | ≈+8–12 s | W1, W2 | `agent_status: done` briefly, then the pane disappears | `agent_settled` → `idle`; `Ok` → tab closes |
 | ≈+12 s | E appears | as W1/W2 at +1 s, label `herdr-smoke-failing-worker#<id8>` | parent `place()` |
-| ≈+16 s | E | `idle` with `agent_session.source: "pi-theta-herdr"` | child `session_start` |
+| ≈+16 s | E | `idle` | child `session_start` |
 | ≈+17 s | E | `working` | its one `@` turn |
 | ≈+20 s | E | `done` | the turn settled; the theta then returns `Err` |
 | +30 s … +∞ | E | unchanged: `done`, labelled, no `FAILED` in `label`/`title` | no outcome signal reaches the child (the 0.3.0 hook is the planned fix) |
+
+### Verified on real Herdr (0.2.0)
+
+Observed timeline from the 2026-09-16 smoke (pi-config carrying companion
+0.2.0, Herdr 0.8.0 protocol 20, pi 0.85.1, pi-theta 0.477.0; three children
+from `herdr-smoke.theta`; `herdr pane list` polled every second):
+
+- t+3.2 s — pane `w1:p2YS` appears with `display_agent:
+  herdr-smoke-worker#26bda3f5` already set by the parent's `place()` metadata
+  (`agent: null`, `agent_status: unknown`, title `node.exe`).
+- t+4.2 s — title `pi`.
+- t+5.3 s — `agent: pi`, `agent_status: working` (the child's own
+  `session_start`/`agent_start` reports).
+- t+7.6–8.8 s — `done` after the turn (title `π - herdr-smoke-worker#… -
+  herdr-smoke`).
+- t+11.4 s — both `Ok` panes gone.
+
+The `Err` child `w1:p2YT`: t+12.5 s `display_agent:
+herdr-smoke-failing-worker#7c5be1c5`; t+14.6 s `agent: pi`, `idle`; t+15.7 s
+`working`; t+16.7 s `done`; then lingers as `done` (no `FAILED` retitle in
+0.2.0 — arrives with the pi-theta outcome hook in 0.3.0).
+
+`herdr agent list` listed all three children while alive. Opt-in suite
+`npm run test:herdr`: 9 rows green (J7's F25 pin: `pane.agent` is `undefined`
+after metadata alone; J8: `agent_session` absent).
 
 ## Settings
 
