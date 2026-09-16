@@ -1,0 +1,29 @@
+{
+  "name": "@bitmonk8/pi-theta-herdr",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Herdr placement backend for pi-theta (RFC 0012): runs each subagent child as a tab in the parent's Herdr workspace, and ships the Herdr NDJSON client pi-config's subagent tool shares.",
+  "keywords": ["pi-package", "pi-theta", "herdr", "subagent", "placement", "multiplexer"],
+  "author": "Thomas Andersen <thomas.andersen@gmail.com>",
+  "license": "MIT OR Apache-2.0",
+  "repository": { "type": "git", "url": "git+ssh://git@github.com/bitmonk8/pi-theta-herdr.git" },
+  "type": "module",
+  "files": ["extensions", "src", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENSE-MIT"],
+  "pi": { "extensions": ["./extensions"] },
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:herdr": "vitest run --config config/vitest/vitest.herdr.config.ts"
+  },
+  "devDependencies": {
+    "@bitmonk8/pi-theta": "github:bitmonk8/pi-theta",
+    "@earendil-works/pi-coding-agent": "~0.80.10",
+    "@earendil-works/pi-agent-core": "~0.80.10",
+    "@earendil-works/pi-ai": "~0.80.10",
+    "@earendil-works/pi-tui": "~0.80.10",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.8"
+  }
+}
