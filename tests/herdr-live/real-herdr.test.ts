@@ -5,7 +5,9 @@
 // `it.skip`, never an early return.
 import * as os from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
 import { createHerdrClient, herdrEnv, HERDR_REPORT_AGENT, HERDR_REPORT_SOURCE, HerdrRequestError } from "../../src/herdr-client.ts";
@@ -327,4 +329,183 @@ describe("RFC 0012 Phase 2 §5.J — real Herdr smoke (npm run test:herdr)", () 
 
     await client.paneClose(paneId);
   });
+
+  it(
+    "J10 (D32) a real pi-theta \u2265 0.478.0 child driven into the child regime by a fabricated launch file, running a no-model-turn Err theta, ends FAILED <label> / idle",
+    async () => {
+      // --- Prerequisites (each throws naming itself) ---
+      const overridePiCli = process.env["PI_THETA_HERDR_LIVE_PI_CLI"];
+      const PI_CLI = overridePiCli ?? join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+      if (!existsSync(PI_CLI)) {
+        throw new Error(
+          `J10 requires a pi CLI entry to exist at ${PI_CLI} (set PI_THETA_HERDR_LIVE_PI_CLI to override; the default is the companion's own devDependency)`,
+        );
+      }
+      const piThetaRoot = join(ROOT, "node_modules", "@bitmonk8", "pi-theta");
+      if (!existsSync(piThetaRoot)) {
+        throw new Error(`J10 requires the companion's pi-theta devDependency at ${piThetaRoot}`);
+      }
+      const piThetaPkgPath = join(piThetaRoot, "package.json");
+      const piThetaVersion = (JSON.parse(readFileSync(piThetaPkgPath, "utf8")) as { version?: unknown }).version;
+      if (typeof piThetaVersion !== "string") {
+        throw new Error(`J10 requires ${piThetaPkgPath} to have a string 'version'`);
+      }
+      const versionMatch = /^(\d+)\.(\d+)\.(\d+)/.exec(piThetaVersion);
+      if (versionMatch === null) {
+        throw new Error(`J10: ${piThetaPkgPath} version does not parse as major.minor.patch: ${piThetaVersion}`);
+      }
+      const piThetaMajor = Number(versionMatch[1]);
+      const piThetaMinor = Number(versionMatch[2]);
+      if (!(piThetaMajor > 0 || piThetaMinor >= 478)) {
+        throw new Error(
+          `J10 requires the installed pi-theta devDependency to be >= 0.478.0 (found ${piThetaVersion}); run npm update @bitmonk8/pi-theta once pi-theta commit 079ddb67 (0.478.0) is pushed`,
+        );
+      }
+
+      // --- Fixture ---
+      const root = mkdtempSync(join(tmpdir(), "pi-theta-herdr-live-j10-"));
+      const thetaDir = join(root, ".pi", "theta");
+      mkdirSync(thetaDir, { recursive: true });
+      const fixtureBody = [
+        "---",
+        'description: "live J10 fixture (companion 0.3.0) - returns Err without a model turn so the companion retitles the pane"',
+        "mode: subagent",
+        "tools:",
+        "  - read",
+        "---",
+        "// Deterministic failure: a `read` of a path that cannot exist lowers to Err and `?`",
+        "// propagates it as this theta's own Err; the child writes the Err envelope, emits the",
+        "// outcome event, and does NOT shut down (RFC 0012 \u00a77), so the pane stays for the assertion.",
+        'read({ path: "./this-path-does-not-exist/live-j10.txt" })?',
+        "",
+        '"unreachable"',
+        "",
+      ].join("\n");
+      writeFileSync(join(thetaDir, "live-err-worker.theta"), fixtureBody, "utf8");
+
+      // Its own directory: pi-theta `rmdir`s the launch file's parent after the one-shot read.
+      const launchDir = mkdtempSync(join(tmpdir(), "pi-theta-launch-"));
+      const launchPath = join(launchDir, "launch.json");
+      writeFileSync(
+        launchPath,
+        JSON.stringify({
+          v: 1,
+          nonce: randomUUID(),
+          controlPlane: { PI_THETA_SUBAGENT_ROOT: "live-err-worker" },
+          presentation: "visible",
+          entry: { kind: "theta" },
+        }),
+        "utf8",
+      );
+
+      const backend = createHerdrPlacementBackend();
+      const placed = await backend.place({
+        execPath: process.execPath,
+        args: [
+          PI_CLI,
+          "-ne",
+          "-e",
+          ROOT,
+          "-e",
+          piThetaRoot,
+          "--theta",
+          thetaDir,
+          "--theta-launch",
+          launchPath,
+          "--name",
+          "live-err-child",
+          "--no-session",
+          "--tools",
+          "read",
+          "--no-skills",
+          "--no-prompt-templates",
+          "--no-themes",
+          "--no-context-files",
+          "--no-approve",
+          "/live-err-worker",
+        ],
+        cwd: root,
+        env: { ...process.env, PI_THETA_HERDR_REPORT: "1" },
+        label: "live-err-child",
+        presentation: "visible",
+        launchFile: launchPath,
+        context: { invokeDepth: 0, parallel: false },
+      });
+      createdPaneIds.push(placed.handle);
+
+      try {
+        // Phase 1: the parent's own D20 metadata report.
+        await pollUntil(placed.handle, (pane) => pane["display_agent"] === "live-err-child", 5_000);
+
+        // Phase 2: the child's session_start reports (D13–D17).
+        await pollUntil(placed.handle, (pane) => pane["agent"] === "pi" && pane["agent_status"] === "idle", 45_000);
+
+        // The child consumed the launch file: proves pi-theta parsed --theta-launch and
+        // entered the child regime (not that the launch file's job was done "correctly" -
+        // only that it was read at all).
+        if (existsSync(launchPath)) {
+          throw new Error(
+            "J10: the child booted but did not consume the launch file - pi-theta did not read --theta-launch (not loaded, or an older build)",
+          );
+        }
+
+        // Phase 3: the err outcome reached the companion and pane.rename was applied.
+        const observed = await pollUntil(placed.handle, (pane) => pane["label"] === "FAILED live-err-child", 45_000);
+        expect(observed["agent_status"]).toBe("idle");
+        expect(observed["agent"]).toBe("pi");
+        expect(observed["display_agent"]).toBe("live-err-child");
+
+        // Record for the README (F35): pin-after-first-run on which PaneInfo fields carry it.
+        // eslint-disable-next-line no-console
+        console.log(`J10 state_labels = ${JSON.stringify(observed["state_labels"])}`);
+        // eslint-disable-next-line no-console
+        console.log(`J10 terminal_title = ${JSON.stringify(observed["terminal_title"])}`);
+        // eslint-disable-next-line no-console
+        console.log(`J10 title = ${JSON.stringify(observed["title"])}`);
+        const agentList = await client.request("agent.list", {});
+        // eslint-disable-next-line no-console
+        console.log(`J10: herdr agent list includes the pane = ${JSON.stringify(agentList).includes(placed.handle)}`);
+      } finally {
+        // Cleanup never fails the row.
+        placed.kill();
+        const gone = await pollUntilGone(placed.handle, 10_000);
+        if (!gone) {
+          // eslint-disable-next-line no-console
+          console.log(`J10 cleanup: pane ${placed.handle} still resolvable 10 s after kill()`);
+        }
+        // The poll precedes removal: the child process holds the fixture tree (cwd, .theta)
+        // until Herdr has torn the pane down; on Windows rmSync on a held tree throws EBUSY/EPERM.
+        try {
+          rmSync(root, { recursive: true, force: true });
+          rmSync(launchDir, { recursive: true, force: true });
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.log(`J10 cleanup: ${String(error)}`);
+        }
+      }
+    },
+    120_000,
+  );
 });
+
+/**
+ * Poll `pane.get` every 500 ms until it rejects with a HerdrRequestError whose kind is
+ * "refused" (J5 pins detail.code === "pane_not_found" for a killed pane) and resolve true,
+ * or resolve false when the budget elapses. Any other rejection or a still-resolving
+ * pane.get keeps polling; never throws (§5.J cleanup contract).
+ */
+async function pollUntilGone(paneId: string, budgetMs: number): Promise<boolean> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      await paneGet(paneId);
+    } catch (error) {
+      if (error instanceof HerdrRequestError && error.kind === "refused") {
+        return true;
+      }
+      // Any other rejection keeps polling (the row's stated contract: never throw).
+    }
+    if (Date.now() - start > budgetMs) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+  }
+}

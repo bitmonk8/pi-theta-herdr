@@ -11,11 +11,19 @@ import {
   attachHerdrChildReporter,
   createHerdrChildReporter,
   shouldAttachChildReporter,
+  ERR_OUTCOME_MESSAGE,
+  FAILED_TITLE_PREFIX,
+  HOLD_TIMEOUT_MS,
   type ChildReporterHost,
   type ChildReporterDeps,
   type HerdrChildReporter,
 } from "../src/herdr-child-reporter.ts";
-import { findLaunchFlagOnArgv } from "../src/protocol.ts";
+import {
+  findLaunchFlagOnArgv,
+  isSubagentChildOutcomePayload,
+  SUBAGENT_CHILD_OUTCOME_API_VERSION,
+  SUBAGENT_CHILD_OUTCOME_CHANNEL,
+} from "../src/protocol.ts";
 import {
   createHerdrClient,
   HERDR_REPORT_AGENT,
@@ -28,8 +36,13 @@ import {
   type PaneAgentSessionReport,
   type PaneMetadata,
 } from "../src/herdr-client.ts";
-import { hang, reply, startFakeHerdrServer, type FakeHerdrServer } from "./helpers/fake-herdr-server.ts";
-import { fakeCtx, fakeHost, type FakePlacementHost } from "./helpers/fake-host.ts";
+import { hang, reply, replyError, startFakeHerdrServer, type FakeHerdrServer } from "./helpers/fake-herdr-server.ts";
+import { fakeCtx, fakeHost, FakeBus, type FakePlacementHost } from "./helpers/fake-host.ts";
+
+// §5.S/§5.H preamble constants (seam sheet).
+const OUTCOME = SUBAGENT_CHILD_OUTCOME_CHANNEL;
+const OUTCOME_OK = { apiVersion: 1, outcome: "ok" as const, slug: "worker" };
+const OUTCOME_ERR = { apiVersion: 1, outcome: "err" as const, slug: "worker" };
 
 const NOW = 1_700_000_000_000;
 const B = 1_700_000_000_000_000; // NOW * 1000, the seq base every M/N row is written against.
@@ -91,14 +104,22 @@ interface RecordedClient extends HerdrClient {
     readonly paneReportMetadata: { paneId: string; metadata: PaneMetadata; opts: HerdrRequestOptions | undefined }[];
     readonly paneReportAgentSession: { paneId: string; report: PaneAgentSessionReport; opts: HerdrRequestOptions | undefined }[];
     readonly paneReportAgent: { paneId: string; report: PaneAgentReport; opts: HerdrRequestOptions | undefined }[];
+    readonly paneRename: { paneId: string; label: string; opts: HerdrRequestOptions | undefined }[];
   };
 }
 
 /** A fake client whose default implementations are PLAIN functions (never `vi.fn`, per the tinyspy-vacuous-trap review note). */
 function fakeClient(
-  overrides: Partial<Pick<HerdrClient, "paneReportMetadata" | "paneReportAgent" | "paneReportAgentSession">> = {},
+  overrides: Partial<
+    Pick<HerdrClient, "paneReportMetadata" | "paneReportAgent" | "paneReportAgentSession" | "paneRename">
+  > = {},
 ): RecordedClient {
-  const calls: RecordedClient["calls"] = { paneReportMetadata: [], paneReportAgentSession: [], paneReportAgent: [] };
+  const calls: RecordedClient["calls"] = {
+    paneReportMetadata: [],
+    paneReportAgentSession: [],
+    paneReportAgent: [],
+    paneRename: [],
+  };
   const paneReportMetadata =
     overrides.paneReportMetadata ??
     ((paneId: string, metadata: PaneMetadata, opts?: HerdrRequestOptions): Promise<void> => {
@@ -117,17 +138,66 @@ function fakeClient(
       calls.paneReportAgent.push({ paneId, report, opts });
       return Promise.resolve();
     });
+  // S10b/S19/H3/H5: the recorder default; a row overriding paneRename supplies its own
+  // (e.g. a synchronously-throwing rename) and is responsible for its own recording.
+  const paneRename =
+    overrides.paneRename ??
+    ((paneId: string, label: string, opts?: HerdrRequestOptions): Promise<void> => {
+      calls.paneRename.push({ paneId, label, opts });
+      return Promise.resolve();
+    });
   return {
     calls,
     env: (): HerdrPaneEnv => PANE,
     request: async (): Promise<unknown> => undefined,
     layoutApplyPane: async (): Promise<string> => "w1:p9",
     paneClose: async (): Promise<void> => {},
-    paneRename: async (): Promise<void> => {},
+    paneRename,
     paneReportMetadata,
     paneReportAgentSession,
     paneReportAgent,
   };
+}
+
+/** §5.H preamble: wraps `setTimeout` so the row can see the reporter's own D34 timer
+ * separately from `vi.getTimerCount()`'s aggregate, and count `unref()` calls. Only ever
+ * used with `fakeClient()` (never the real client / fake daemon) so no request deadline
+ * timer pollutes the count (§5.H construction note). */
+function installSetTimeoutSpy() {
+  const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+  const unrefCalls: number[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: any, ms?: number, ...rest: any[]) => {
+    const timer = realSetTimeout(fn, ms, ...rest) as unknown as { unref: () => unknown };
+    const original = timer.unref.bind(timer);
+    timer.unref = (): unknown => {
+      unrefCalls.push(1);
+      return original();
+    };
+    return timer as unknown as NodeJS.Timeout;
+  }) as typeof setTimeout);
+  return { unrefCalls, setTimeoutSpy };
+}
+
+/** §5.H construction (seam sheet): fake timers + the setTimeout spy + the plain-function
+ * fakeClient(). Returns the reporter, its host, and the recording client. */
+function makeHoldReporter(
+  bus: FakeBus | undefined,
+  overrides: Partial<ChildReporterDeps> = {},
+): { reporter: HerdrChildReporter; host: FakePlacementHost; client: RecordedClient } {
+  const client = fakeClient();
+  const reporter = createHerdrChildReporter({
+    client,
+    argv: CHILD_ARGV,
+    env: {},
+    now: () => NOW,
+    requestTimeoutMs: 50,
+    ...(bus !== undefined ? { events: bus } : {}),
+    ...overrides,
+  });
+  const host = fakeHost(undefined);
+  reporter.attach(host);
+  return { reporter, host, client };
 }
 
 describe("§6.L role detection", () => {
@@ -787,5 +857,847 @@ describe("§6.O detach / shutdown", () => {
       "pane.report_agent",
     ]);
     expect((fake.requests[3]!.params as Record<string, unknown>)["state"]).toBe("working");
+  });
+});
+
+describe("§5.S outcome hook", () => {
+  it("S1 attach subscribes once to the outcome channel; not a pi.on handler; a second attach stays one-shot", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    expect(bus.subscriberCount(OUTCOME)).toBe(1);
+    expect(reporter.subscribed).toBe(true);
+    expect(host.onCalls).toEqual(["session_start", "agent_start", "agent_settled", "session_shutdown"]);
+    reporter.attach(host);
+    expect(bus.subscriberCount(OUTCOME)).toBe(1);
+  });
+
+  it("S2 holding suppresses every settle; working is re-asserted per turn (no dedup)", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    await reporter.flush();
+    expect(fake.requests.length).toBe(4);
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    await reporter.flush();
+    expect(fake.requests.length).toBe(5);
+    expect(fake.requests[4]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 5,
+      state: "working",
+    });
+    // §5 preamble hygiene: this row reached agent_settled while holding — end in session_shutdown.
+    const results = host.emit("session_shutdown", { reason: "reload" }, fakeCtx());
+    await Promise.all(results as Promise<void>[]);
+  });
+
+  it("S3 an ok outcome after a settle-while-holding sends the terminal idle report with no message", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    bus.emit(OUTCOME, OUTCOME_OK);
+    await reporter.flush();
+    expect(fake.requests[4]!.method).toBe("pane.report_agent");
+    expect(fake.requests[4]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 5,
+      state: "idle",
+    });
+    expect(Object.keys(fake.requests[4]!.params as Record<string, unknown>)).toEqual(["pane_id", "source", "agent", "seq", "state"]);
+    expect(fake.requests.length).toBe(5);
+    expect(fake.connections).toBe(5);
+  });
+
+  it("S4 an err outcome renames then reports idle+message; the rename consumes no seq", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(fake.requests.slice(4).map((r) => [r.method, r.params])).toEqual([
+      ["pane.rename", { pane_id: "w1:p1", label: "FAILED worker#ab12cd34" }],
+      [
+        "pane.report_agent",
+        {
+          pane_id: "w1:p1",
+          source: HERDR_REPORT_SOURCE,
+          agent: HERDR_REPORT_AGENT,
+          seq: B + 5,
+          state: "idle",
+          message: ERR_OUTCOME_MESSAGE,
+        },
+      ],
+    ]);
+    expect(Object.keys(fake.requests[4]!.params as Record<string, unknown>)).toEqual(["pane_id", "label"]);
+    expect(fake.requests.length).toBe(6);
+  });
+
+  it("S5 no events dep: subscribed is false; the sequence is identical to the 0.2.0 path", async () => {
+    const fake = await fakeServer();
+    const { reporter, host } = makeReporter(fake);
+    expect(reporter.subscribed).toBe(false);
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    await reporter.flush();
+    expect(fake.requests.length).toBe(5);
+    expect(fake.requests[4]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 5,
+      state: "idle",
+    });
+  });
+
+  it("S5b the fallback row (D34): no emission ever; the hold produces the 0.2.0 idle after HOLD_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const bus = new FakeBus();
+      const { reporter, host, client } = makeHoldReporter(bus);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.calls.paneReportAgent.length).toBe(2);
+      await vi.advanceTimersByTimeAsync(HOLD_TIMEOUT_MS);
+      expect(client.calls.paneReportAgent.length).toBe(3);
+      const report = client.calls.paneReportAgent[2]!.report;
+      expect(report.state).toBe("idle");
+      expect(report.seq).toBe(B + 5);
+      expect("message" in report).toBe(false);
+      expect(reporter.subscribed).toBe(true);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("S6 a mismatched apiVersion is ignored; holding stays intact through the next settle", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    bus.emit(OUTCOME, { apiVersion: 2, outcome: "err", slug: "worker" });
+    await reporter.flush();
+    expect(fake.requests.length).toBe(4);
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    await reporter.flush();
+    expect(fake.requests.length).toBe(4);
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(fake.requests.length).toBe(6);
+  });
+
+  it("S7 garbage outcome payloads neither throw nor consume the latch", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    await reporter.flush();
+    const vectors: unknown[] = [
+      null,
+      "x",
+      42,
+      [1],
+      {},
+      { apiVersion: 1 },
+      { apiVersion: 1, outcome: "meh", slug: "w" },
+      { apiVersion: 1, outcome: "err" },
+      { apiVersion: 1, outcome: "err", slug: "" },
+      { apiVersion: 1, outcome: "err", slug: 5 },
+      { outcome: "err", slug: "w" },
+    ];
+    for (const v of vectors) {
+      expect(() => bus.emit(OUTCOME, v)).not.toThrow();
+    }
+    await reporter.flush();
+    expect(fake.requests.length).toBe(4);
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(fake.requests.length).toBe(6);
+  });
+
+  it("S8 session_shutdown releases the subscription; a later outcome is inert (both reasons)", async () => {
+    for (const reason of ["reload", "quit"] as const) {
+      const fake = await fakeServer();
+      const bus = new FakeBus();
+      const { reporter, host } = makeReporter(fake, { events: bus });
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      await reporter.flush();
+      const results = host.emit("session_shutdown", { reason }, fakeCtx());
+      await Promise.all(results as Promise<void>[]);
+      bus.emit(OUTCOME, OUTCOME_ERR);
+      await reporter.flush();
+      expect(bus.subscriberCount(OUTCOME)).toBe(0);
+      expect(reporter.subscribed).toBe(false);
+      expect(reporter.active).toBe(false);
+      expect(fake.requests.length).toBe(4);
+    }
+  });
+
+  it("S9 the parent role (attachHerdrChildReporter with a non-child argv) never subscribes", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const client = createHerdrClient({ env: fake.env });
+    const host = fakeHost(undefined);
+    const reporter = attachHerdrChildReporter(host as unknown as ChildReporterHost, {
+      argv: ["node"],
+      env: fake.env,
+      client,
+      events: bus,
+    });
+    expect(reporter).toBeUndefined();
+    expect(bus.subscriberCount(OUTCOME)).toBe(0);
+    expect(host.onCalls).toEqual([]);
+  });
+
+  it("S10 a refused rename is swallowed and the report still follows", async () => {
+    const fake = await fakeServer();
+    fake.script((request, socket) => {
+      if (request.method === "pane.rename") {
+        replyError(socket, request.id, { code: "pane_not_found", message: "pane w1:p1 not found" });
+        return;
+      }
+      reply(socket, { id: request.id, result: { type: "ok" } });
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const bus = new FakeBus();
+      const { reporter, host } = makeReporter(fake, { events: bus });
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      bus.emit(OUTCOME, OUTCOME_ERR);
+      await reporter.flush();
+      expect(fake.requests.map((r) => r.method).slice(-2)).toEqual(["pane.rename", "pane.report_agent"]);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("S10b a synchronously-throwing paneRename does not throw out of bus.emit; the report still followed", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const client = fakeClient({
+        paneRename: (): Promise<void> => {
+          throw new Error("boom");
+        },
+      });
+      const bus = new FakeBus();
+      const host = fakeHost(undefined);
+      const reporter = createHerdrChildReporter({
+        client,
+        argv: CHILD_ARGV,
+        env: {},
+        now: () => NOW,
+        requestTimeoutMs: 50,
+        events: bus,
+      });
+      reporter.attach(host);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      expect(() => bus.emit(OUTCOME, OUTCOME_ERR)).not.toThrow();
+      await reporter.flush();
+      expect(client.calls.paneReportAgent.some((c) => c.report.message === ERR_OUTCOME_MESSAGE)).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("S11 exactly-once: a second err and a following ok add nothing further", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(fake.requests.length).toBe(6);
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(fake.requests.length).toBe(6);
+    bus.emit(OUTCOME, OUTCOME_OK);
+    await reporter.flush();
+    expect(fake.requests.length).toBe(6);
+  });
+
+  it("S12 an outcome with no turn ever held still produces the terminal report (err)", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(fake.requests.slice(3).map((r) => [r.method, r.params])).toEqual([
+      ["pane.rename", { pane_id: "w1:p1", label: "FAILED worker#ab12cd34" }],
+      [
+        "pane.report_agent",
+        {
+          pane_id: "w1:p1",
+          source: HERDR_REPORT_SOURCE,
+          agent: HERDR_REPORT_AGENT,
+          seq: B + 4,
+          state: "idle",
+          message: ERR_OUTCOME_MESSAGE,
+        },
+      ],
+    ]);
+  });
+
+  it("S12b an ok outcome with no turn ever held reports idle with no message", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    bus.emit(OUTCOME, OUTCOME_OK);
+    await reporter.flush();
+    expect(fake.requests[3]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 4,
+      state: "idle",
+    });
+  });
+
+  it("S13 subscribed but inactive is inert: a non-tui session_start, and no session_start at all", async () => {
+    const fake1 = await fakeServer();
+    const bus1 = new FakeBus();
+    const { reporter: r1, host: h1 } = makeReporter(fake1, { events: bus1 });
+    h1.emit("session_start", { reason: "startup" }, fakeCtx({ mode: "json" }));
+    expect(() => bus1.emit(OUTCOME, OUTCOME_ERR)).not.toThrow();
+    await r1.flush();
+    expect(r1.subscribed).toBe(true);
+    expect(fake1.connections).toBe(0);
+
+    const fake2 = await fakeServer();
+    const bus2 = new FakeBus();
+    const { reporter: r2 } = makeReporter(fake2, { events: bus2 });
+    expect(() => bus2.emit(OUTCOME, OUTCOME_ERR)).not.toThrow();
+    await r2.flush();
+    expect(r2.subscribed).toBe(true);
+    expect(fake2.connections).toBe(0);
+  });
+
+  it("S14 post-outcome turns are 0.2.0: holding is not re-entered", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    await reporter.flush();
+    const tail = fake.requests
+      .slice(6)
+      .map((r) => [(r.params as Record<string, unknown>)["state"], (r.params as Record<string, unknown>)["seq"]]);
+    expect(tail).toEqual([
+      ["working", B + 6],
+      ["idle", B + 7],
+      ["working", B + 8],
+      ["idle", B + 9],
+    ]);
+  });
+
+  it("S15 slug is the rename fallback when the pane has no display label (two ways to have no label)", async () => {
+    for (const ctx of [fakeCtx({ sessionName: undefined }), fakeCtx({ omitGetSessionName: true })]) {
+      const fake = await fakeServer();
+      const bus = new FakeBus();
+      const { reporter, host } = makeReporter(fake, { events: bus });
+      host.emit("session_start", { reason: "startup" }, ctx);
+      host.emit("agent_start", {}, fakeCtx());
+      bus.emit(OUTCOME, OUTCOME_ERR);
+      await reporter.flush();
+      expect(fake.requests[3]!.method).toBe("pane.rename");
+      expect(fake.requests[3]!.params).toEqual({ pane_id: "w1:p1", label: "FAILED worker" });
+      expect(fake.requests[4]!.params).toEqual({
+        pane_id: "w1:p1",
+        source: HERDR_REPORT_SOURCE,
+        agent: HERDR_REPORT_AGENT,
+        seq: B + 4,
+        state: "idle",
+        message: ERR_OUTCOME_MESSAGE,
+      });
+    }
+  });
+
+  it("S16 slug is never compared: an outcome naming a different slug still uses the label", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    bus.emit(OUTCOME, { apiVersion: 1, outcome: "err", slug: "other" });
+    await reporter.flush();
+    expect(fake.requests[4]!.params).toEqual({ pane_id: "w1:p1", label: "FAILED worker#ab12cd34" });
+  });
+
+  it("S17 extra keys on an ok payload are tolerated (T3's guard, exercised through the hook)", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    bus.emit(OUTCOME, { apiVersion: 1, outcome: "ok", slug: "worker", extra: true });
+    await reporter.flush();
+    expect(fake.requests[4]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 5,
+      state: "idle",
+    });
+  });
+
+  it("S18 an ok outcome and a same-tick quit shutdown: the idle report lands inside the awaited shutdown", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    bus.emit(OUTCOME, OUTCOME_OK);
+    const results = host.emit("session_shutdown", { reason: "quit" }, fakeCtx());
+    await Promise.all(results as Promise<void>[]);
+    expect(fake.requests[4]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 5,
+      state: "idle",
+    });
+    expect(reporter.subscribed).toBe(false);
+  });
+
+  it("S19 the report chain is fire-and-forget before flush(); the deadline flows through both calls", async () => {
+    const client = fakeClient();
+    const bus = new FakeBus();
+    const host = fakeHost(undefined);
+    const reporter = createHerdrChildReporter({
+      client,
+      argv: CHILD_ARGV,
+      env: {},
+      now: () => NOW,
+      requestTimeoutMs: 50,
+      events: bus,
+    });
+    reporter.attach(host);
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    const before = client.calls.paneRename.length + client.calls.paneReportAgent.length;
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    expect(client.calls.paneRename.length + client.calls.paneReportAgent.length).toBe(before);
+    await reporter.flush();
+    expect(client.calls.paneRename[0]).toEqual({
+      paneId: "w1:p1",
+      label: "FAILED worker#ab12cd34",
+      opts: { timeoutMs: 50 },
+    });
+    const errReport = client.calls.paneReportAgent.find((c) => c.report.message === ERR_OUTCOME_MESSAGE);
+    expect(errReport?.opts).toEqual({ timeoutMs: 50 });
+    expect(errReport?.report.message).toBe(ERR_OUTCOME_MESSAGE);
+  });
+
+  it("S20 the hook is not re-established on a reused instance (O5-class host)", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+
+    const results = host.emit("session_shutdown", { reason: "reload" }, fakeCtx());
+    await Promise.all(results as Promise<void>[]);
+
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    await reporter.flush();
+    expect(reporter.subscribed).toBe(false);
+    expect(fake.requests.slice(6).map((r) => [r.method, (r.params as Record<string, unknown>)["seq"]])).toEqual([
+      ["pane.report_metadata", B + 1],
+      ["pane.report_agent_session", B + 2],
+      ["pane.report_agent", B + 3],
+    ]);
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    expect(bus.subscriberCount(OUTCOME)).toBe(0);
+  });
+});
+
+// §5.H preamble: fake timers + the setTimeout spy + the plain-function fakeClient() are
+// mandatory for every row below (except H11) — the real client's `herdrRequest` arms one
+// `setTimeout` deadline per request, which would pollute `vi.getTimerCount()` and the spy's
+// call count if the daemon-backed client were used instead.
+describe("§5.H bounded hold", () => {
+  it("H1 one setTimeout armed and unref'd after a settle-while-holding; fires exactly at HOLD_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    const { unrefCalls, setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const bus = new FakeBus();
+      const { reporter, host, client } = makeHoldReporter(bus);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.calls.paneReportAgent.length).toBe(2);
+      expect(setTimeoutSpy.mock.calls.length).toBe(1);
+      expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(HOLD_TIMEOUT_MS);
+      expect(unrefCalls.length).toBe(1);
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(client.calls.paneReportAgent.length).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(client.calls.paneReportAgent.length).toBe(3);
+      const report = client.calls.paneReportAgent[2]!.report;
+      expect(report.state).toBe("idle");
+      expect(report.seq).toBe(B + 5);
+      expect("message" in report).toBe(false);
+      expect(reporter.subscribed).toBe(true);
+      expect(bus.subscriberCount(OUTCOME)).toBe(1);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H2 a new turn cancels the pending fallback; re-armed per settle", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const bus = new FakeBus();
+      const { host, client } = makeHoldReporter(bus);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      host.emit("agent_start", {}, fakeCtx());
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(client.calls.paneReportAgent.map((c) => [c.report.state, c.report.seq])).toEqual([
+        ["idle", B + 3],
+        ["working", B + 4],
+        ["working", B + 5],
+      ]);
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(client.calls.paneReportAgent.map((c) => [c.report.state, c.report.seq])).toEqual([
+        ["idle", B + 3],
+        ["working", B + 4],
+        ["working", B + 5],
+        ["idle", B + 6],
+      ]);
+      expect(setTimeoutSpy.mock.calls.length).toBe(2);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H3 an outcome clears the pending timer (vi.getTimerCount() === 0), both ok and err variants", async () => {
+    for (const [outcome, expectRename] of [
+      [OUTCOME_OK, false],
+      [OUTCOME_ERR, true],
+    ] as const) {
+      vi.useFakeTimers();
+      const { setTimeoutSpy } = installSetTimeoutSpy();
+      try {
+        const bus = new FakeBus();
+        const { host, client } = makeHoldReporter(bus);
+        host.emit("session_start", { reason: "startup" }, fakeCtx());
+        host.emit("agent_start", {}, fakeCtx());
+        host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+        await vi.advanceTimersByTimeAsync(10_000);
+        bus.emit(OUTCOME, outcome);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(vi.getTimerCount()).toBe(0);
+        if (expectRename) {
+          expect(client.calls.paneRename[0]?.label).toBe("FAILED worker#ab12cd34");
+        }
+        const before = client.calls.paneReportAgent.length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(client.calls.paneReportAgent.length).toBe(before);
+      } finally {
+        setTimeoutSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("H4 session_shutdown clears the pending timer for both reasons; no report follows", async () => {
+    for (const reason of ["reload", "quit"] as const) {
+      vi.useFakeTimers();
+      const { setTimeoutSpy } = installSetTimeoutSpy();
+      try {
+        const bus = new FakeBus();
+        const { reporter, host, client } = makeHoldReporter(bus);
+        host.emit("session_start", { reason: "startup" }, fakeCtx());
+        host.emit("agent_start", {}, fakeCtx());
+        host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+        const results = host.emit("session_shutdown", { reason }, fakeCtx());
+        await Promise.all(results as Promise<void>[]);
+        expect(vi.getTimerCount()).toBe(0);
+        const before = client.calls.paneReportAgent.length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(client.calls.paneReportAgent.length).toBe(before);
+        expect(reporter.active).toBe(false);
+        expect(reporter.subscribed).toBe(false);
+      } finally {
+        setTimeoutSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("H5 H1 then an outcome sends the terminal report exactly once, even after a fallback", async () => {
+    for (const [outcome, expectRename] of [
+      [OUTCOME_ERR, true],
+      [OUTCOME_OK, false],
+    ] as const) {
+      vi.useFakeTimers();
+      const { setTimeoutSpy } = installSetTimeoutSpy();
+      try {
+        const bus = new FakeBus();
+        const { host, client } = makeHoldReporter(bus);
+        host.emit("session_start", { reason: "startup" }, fakeCtx());
+        host.emit("agent_start", {}, fakeCtx());
+        host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+        await vi.advanceTimersByTimeAsync(HOLD_TIMEOUT_MS);
+        expect(client.calls.paneReportAgent.length).toBe(3);
+        bus.emit(OUTCOME, outcome);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(client.calls.paneRename.length).toBe(expectRename ? 1 : 0);
+        expect(client.calls.paneReportAgent.length).toBe(4);
+        bus.emit(OUTCOME, outcome);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(client.calls.paneReportAgent.length).toBe(4);
+        expect(client.calls.paneRename.length).toBe(expectRename ? 1 : 0);
+      } finally {
+        setTimeoutSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("H6 holding re-enters after a fallback while outcomeSeen is still false", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const bus = new FakeBus();
+      const { host, client } = makeHoldReporter(bus);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(HOLD_TIMEOUT_MS);
+      expect(client.calls.paneReportAgent.length).toBe(3);
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.calls.paneReportAgent.length).toBe(4);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(client.calls.paneReportAgent.length).toBe(5);
+      expect(setTimeoutSpy.mock.calls.length).toBe(2);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H7 a non-idle settle while holding arms no timer and sends nothing (P11)", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const bus = new FakeBus();
+      const { host, client } = makeHoldReporter(bus);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: false }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(setTimeoutSpy.mock.calls.length).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(client.calls.paneReportAgent.length).toBe(2);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H8 no events dep: identical to S5/M6, zero reporter setTimeout calls", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const { reporter, host, client } = makeHoldReporter(undefined);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reporter.subscribed).toBe(false);
+      expect(client.calls.paneReportAgent[2]!.report).toEqual({
+        source: HERDR_REPORT_SOURCE,
+        agent: HERDR_REPORT_AGENT,
+        seq: B + 5,
+        state: "idle",
+      });
+      expect(setTimeoutSpy.mock.calls.length).toBe(0);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H9 detach() clears the pending timer (not merely inert behind !active)", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    try {
+      const bus = new FakeBus();
+      const { reporter, host, client } = makeHoldReporter(bus);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      reporter.detach();
+      expect(vi.getTimerCount()).toBe(0);
+      const before = client.calls.paneReportAgent.length;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(client.calls.paneReportAgent.length).toBe(before);
+      expect(reporter.active).toBe(false);
+      expect(reporter.subscribed).toBe(true);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H10 a throwing fallback dispatch does not kill the chain or the timer callback", async () => {
+    vi.useFakeTimers();
+    const { setTimeoutSpy } = installSetTimeoutSpy();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const recorded: PaneAgentReport[] = [];
+      const client = fakeClient({
+        paneReportAgent: (_paneId: string, report: PaneAgentReport): Promise<void> => {
+          recorded.push(report);
+          if (report.seq === B + 5) throw new Error("boom");
+          return Promise.resolve();
+        },
+      });
+      const bus = new FakeBus();
+      const host = fakeHost(undefined);
+      const reporter = createHerdrChildReporter({
+        client,
+        argv: CHILD_ARGV,
+        env: {},
+        now: () => NOW,
+        requestTimeoutMs: 50,
+        events: bus,
+      });
+      reporter.attach(host);
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      host.emit("agent_start", {}, fakeCtx());
+      host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+      expect(() => vi.advanceTimersByTime(20_000)).not.toThrow();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(unhandled).toEqual([]);
+      host.emit("agent_start", {}, fakeCtx());
+      await reporter.flush();
+      expect(recorded[recorded.length - 1]).toEqual({
+        source: HERDR_REPORT_SOURCE,
+        agent: HERDR_REPORT_AGENT,
+        seq: B + 6,
+        state: "working",
+      });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("H11 real timers + fake daemon: an injected holdTimeoutMs reaches the real setTimeout and rides the real chain", async () => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus, holdTimeoutMs: 30 });
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx({ idle: true }));
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    await reporter.flush();
+    expect(fake.requests[4]!.params).toEqual({
+      pane_id: "w1:p1",
+      source: HERDR_REPORT_SOURCE,
+      agent: HERDR_REPORT_AGENT,
+      seq: B + 5,
+      state: "idle",
+    });
+    expect(fake.requests.length).toBe(5);
+  });
+});
+
+describe("§5.T protocol guard", () => {
+  it("T1 isSubagentChildOutcomePayload accepts ok and err payloads", () => {
+    expect(isSubagentChildOutcomePayload({ apiVersion: 1, outcome: "ok", slug: "w" })).toBe(true);
+    expect(isSubagentChildOutcomePayload({ apiVersion: 1, outcome: "err", slug: "w" })).toBe(true);
+  });
+
+  it("T2 the S7 garbage vectors all fail the guard, including empty and non-string slug", () => {
+    const vectors: unknown[] = [
+      null,
+      "x",
+      42,
+      [1],
+      {},
+      { apiVersion: 1 },
+      { apiVersion: 1, outcome: "meh", slug: "w" },
+      { apiVersion: 1, outcome: "err" },
+      { apiVersion: 1, outcome: "err", slug: "" },
+      { apiVersion: 1, outcome: "err", slug: 5 },
+      { outcome: "err", slug: "w" },
+    ];
+    for (const v of vectors) {
+      expect(isSubagentChildOutcomePayload(v)).toBe(false);
+    }
+  });
+
+  it("T3 extra keys are tolerated (mirrors isPlacementDiscoverPayload's posture)", () => {
+    expect(isSubagentChildOutcomePayload({ apiVersion: 1, outcome: "err", slug: "w", extra: 1 })).toBe(true);
+  });
+
+  it("T4 the runtime literals hold exactly", () => {
+    expect(SUBAGENT_CHILD_OUTCOME_CHANNEL).toBe("pi-theta:subagent-child:outcome:v1");
+    expect(SUBAGENT_CHILD_OUTCOME_API_VERSION).toBe(1);
+    expect(ERR_OUTCOME_MESSAGE).toBe("theta returned Err");
+    expect(FAILED_TITLE_PREFIX).toBe("FAILED ");
+    expect(HOLD_TIMEOUT_MS).toBe(20_000);
   });
 });

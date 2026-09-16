@@ -5,6 +5,43 @@ The format follows Keep a Changelog; the project adheres to Semantic Versioning.
 The package versions independently of pi-theta against the registration
 protocol's `apiVersion` (RFC 0012 §5).
 
+## [0.3.0]
+
+### Added
+- The child role consumes pi-theta's subagent-child outcome event
+  (`pi-theta:subagent-child:outcome:v1`, payload `{ apiVersion: 1, outcome: "ok" | "err",
+  slug }`, pi-theta ≥ 0.478.0; RFC 0012 §7, §Open questions 5 close-out). Subscribed on the
+  process-local `pi.events` bus at attach, in the child role only; released at
+  `session_shutdown`. From the child's first `agent_start` until the event, `agent_settled`
+  no longer reports `idle` (the theta is running between its own turns); the hold is
+  bounded — `HOLD_TIMEOUT_MS` (20 s) after a settle with no further turn and no event, the
+  0.2.0 `idle` goes out anyway and the next turn re-holds. `ok` →
+  `pane.report_agent { state: "idle" }` (Herdr observed to render `done`) before the tab
+  closes; `err` → `pane.rename { label: "FAILED <label>" }` then `pane.report_agent
+  { state: "idle", message: "theta returned Err" }` — `<label>` is the child's display label,
+  else the event's `slug`. Exactly one terminal report per session; a terminal report is
+  sent even for a theta that failed before any turn; duplicate, garbled or other-version
+  payloads are ignored; a refused rename never suppresses the state report.
+- `src/protocol.ts`: `SUBAGENT_CHILD_OUTCOME_CHANNEL`, `SUBAGENT_CHILD_OUTCOME_API_VERSION`,
+  `SubagentChildOutcome`, `SubagentChildOutcomePayload`, `isSubagentChildOutcomePayload`,
+  pinned equal to pi-theta's exports by the conformance suite.
+- `ChildReporterDeps.events` (the probed `pi.events`), `ChildReporterDeps.holdTimeoutMs`,
+  `HerdrChildReporter.subscribed`, `ERR_OUTCOME_MESSAGE`, `FAILED_TITLE_PREFIX`,
+  `HOLD_TIMEOUT_MS`, `OutcomeEventBus`.
+- Live row J10: a real pi + pi-theta child in the child regime (fabricated launch file, a
+  `.theta` returning `Err` without a model turn) ends `FAILED <label>` / `idle`.
+
+### Changed
+- Requirements: pi-theta ≥ 0.478.0 for the retitle; older pi-theta degrades to 0.2.0
+  behaviour after the bounded hold (at most 20 s of `working` after a turn settles) and is
+  never retitled — install both packages together (pi-config does).
+- `HerdrClient` unchanged; the four pi-config-compatible functions are byte-identical in
+  behaviour. `place()` and `kill()` unchanged.
+- devDependency `@bitmonk8/pi-theta` bumped to the 0.478.0 commit `079ddb67` (lockfile).
+
+### Verified
+- (fill from the 0.3.0 smoke and J10, §8 of the seam sheet)
+
 ## [0.2.0]
 
 ### Added

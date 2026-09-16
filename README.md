@@ -8,8 +8,8 @@ D5). With it loaded, every subagent child pi-theta launches — a `mode:
 subagent` slash command, an `invoke(...)` call, a `.theta` callable, a `par
 for` iteration, or a `subagent fn` call — opens as a tab in the parent's
 Herdr workspace instead of running headless: the tab closes itself when the
-child returns `Ok`, and lingers — labelled in Herdr's agents list but not
-retitled — when it returns `Err`.
+child returns `Ok`, and lingers, retitled `FAILED <label>` in Herdr's agents
+list, when it returns `Err` (pi-theta ≥ 0.478.0).
 The same repository is the home of the Herdr NDJSON client that pi-config's
 `subagent` tool imports (`src/herdr-client.ts`).
 
@@ -17,8 +17,10 @@ The same repository is the home of the Herdr NDJSON client that pi-config's
 
 - Herdr 0.8.x (API `protocol: 20`, `herdr api schema --json`).
 - Pi with `pi.events` (≥ 0.34; verified against 0.80.10 and 0.85.1).
-- pi-theta ≥ 0.475.0 — the placement seam, registration protocol
-  `apiVersion: 1`.
+- pi-theta ≥ 0.475.0 for placement; **≥ 0.478.0 for the retitle** (the child
+  outcome event `pi-theta:subagent-child:outcome:v1`); older pi-theta
+  degrades to 0.2.0 behaviour after the bounded hold (at most 20 s of
+  `working` after a turn settles) and never retitles.
 - Windows: Herdr's control socket is a named pipe
   (`\\.\pipe\<HERDR_SOCKET_PATH>`); the client handles this transparently.
 - pi-config ≥ `2d6ffb0` for child-side reporting (*Agents-list
@@ -72,10 +74,13 @@ pi-config's own dependencies.
   opening one tab per iteration.
 - **`kill()`** issues `pane.close` against the pane Herdr assigned to the
   child.
-- **Exit and lifecycle.** `Ok` closes the child's own tab; `Err` leaves the
-  tab open, still not retitled — a retitle needs an outcome signal that does
-  not exist yet and is planned as a pi-theta hook for the companion's 0.3.0 —
-  so its output stays inspectable. The backend reports `observesExit: false`:
+- **Exit and lifecycle.** `Ok` closes the child's own tab. `Err` leaves the
+  tab open and, since 0.3.0, retitles it `FAILED <label>` and reports the
+  pane idle with the message `theta returned Err` — the child's pi-theta
+  (≥ 0.478.0) emits `pi-theta:subagent-child:outcome:v1` on the
+  process-local `pi.events` bus after every terminal envelope, and this
+  package consumes it inside the child. The backend still reports
+  `observesExit: false`:
   pi-theta settles the child from its own loopback result channel rather than
   from process exit, with a heartbeat-silence budget of 30 seconds, so a
   lingering `Err` tab is never torn down by teardown logic.
@@ -133,19 +138,34 @@ was applied. `seq` = `Date.now()*1000 + n` per session — observed on Herdr
 0.8.0: reports with small literal `seq` values (1..4) were acknowledged and
 not applied; wall-clock-based values are applied.
 
+From the child's first model turn (`agent_start`) until pi-theta's outcome
+event, the badge is held at `working`: `agent_settled` between turns no
+longer reports `idle`, because a theta runs code, tools and child fan-outs
+between its own turns. The hold is bounded: 20 s after a turn settles with
+no further turn and no outcome, the pane is reported `idle` anyway
+(`HOLD_TIMEOUT_MS`), and the next turn re-asserts `working` — a gap longer
+than 20 s therefore reads `done` for its remainder, as every gap did in
+0.2.0. `ok` → `pane.report_agent { state: idle }` (observed: Herdr then
+renders `done`) right before the tab closes. `err` → `pane.rename { label:
+"FAILED <label>" }` then `pane.report_agent { state: idle, message: "theta
+returned Err" }`. `<label>` is the pane's `display_agent` (the child's
+`--name`); when the child has no name, the theta's slug from the event. A
+theta that fails before any turn is retitled the same way and reads `idle`.
+Without a `pi.events` bus nothing is subscribed and the 0.2.0 behaviour
+stands.
+
 ### What the sidebar shows over a child's life
 
-`idle` at boot, `working` during each model turn, `done` between turns and
-after the last one — Herdr derives `done` from a `working → idle`
-transition; it is not a value the companion sends. An `Ok` child's tab
-closes itself right after its last turn settles. An `Err` child's tab stays
-open — labelled, showing `done` or `idle`, not retitled `FAILED`: the child
-has no way to distinguish `Ok` from `Err` (pi-theta signals nothing at the
-`Err` end), and every "idle for N seconds" heuristic was rejected because a
-theta sits idle between its own turns for as long as its tools and children
-take. A theta pane still present after its parent finished is an `Err`
-linger (or a human continuing it) — retitling that pane arrives with a
-planned pi-theta outcome hook, targeted for the companion's 0.3.0.
+`idle` at boot → `working` from the first model turn, held across the
+theta's tool calls, `invoke`s and `par for` children (for up to 20 s past
+each turn's settle; a longer stretch shows `done` until the next turn) → at
+`Ok`: `done` (observed derivation from `working → idle`) for the ≈1–2 s
+before the tab closes itself → at `Err`: the tab label becomes `FAILED
+<label>` and the badge reads `done` (or `idle` when no turn ever ran); the
+tab stays for a human to read or continue, and their turns then flip
+`working`/`done` as before. The `FAILED` label is never restored. The
+`message` is not visible through `pane.get` (no field carries it; observed
+`state_labels`: <fill from J10/smoke>).
 
 ### Coexistence with `herdr:pi`
 
@@ -156,7 +176,10 @@ honours `herdr:pi` on node-rooted panes too, both sources publish the same
 `agent_session.source` shows which source Herdr took — when Herdr records
 one: on Herdr 0.8.0 none appeared for the companion's own reports.
 `display_agent` comes only from the companion — `herdr:pi` never calls
-`pane.report_metadata`.
+`pane.report_metadata`. `herdr:pi` knows nothing of the outcome event; if a
+later Herdr honours it on these panes, its per-turn `idle` would flicker
+`done` between turns while the companion holds `working` — the two sources
+would then disagree between turns. Pinned by J9; revisit if it reds.
 
 ### Caveats
 
@@ -170,9 +193,13 @@ emits a `blocked` state for a pi process. An `exec`-placed child inside a
 Herdr pane inherits its mux server's `HERDR_*` variables and would report
 onto that pane instead of its own — an exposure shared with every Herdr
 integration. Windows `agent_session_path` resume behaviour is unverified
-(the session report is not applied by Herdr 0.8.0 anyway).
+(the session report is not applied by Herdr 0.8.0 anyway). A child whose
+marked root refuses at load (a bad frontmatter, a hash mismatch) writes a
+refusal envelope and emits no outcome event — its pane stays `idle` and is
+not retitled (pi-theta 0.478.0 scope). Two copies of this package loaded in
+one child each rename and report once — harmless duplicates.
 
-### Expected `herdr agent list` timeline (to be re-observed in the 0.2.0 smoke)
+### Expected `herdr agent list` timeline (0.3.0 — to be re-observed)
 
 Drawn from the Phase 2D-bis smoke procedure's `herdr-smoke.theta` driver
 (`par for … max 2` over two `Ok` workers, then one `Err` worker), polled
@@ -183,13 +210,17 @@ the `Ok` workers, `E` is the `Err` worker.
 |---|---|---|---|
 | ≈+1 s | W1, W2 appear | `display_agent` already set; `agent_status: unknown`; `agent`: absent until the child's first `pane.report_agent` (observed) | parent `place()` |
 | ≈+4 s | W1, W2 | `agent: "pi"`, `agent_status: idle` | child `session_start` |
-| ≈+5 s | W1, W2 | `agent_status: working` | first `@` turn → `agent_start` |
-| ≈+8–12 s | W1, W2 | `agent_status: done` briefly, then the pane disappears | `agent_settled` → `idle`; `Ok` → tab closes |
+| ≈+5 s | W1, W2 | `agent_status: working` — held | first `@` turn → `agent_start` |
+| ≈+8–12 s | W1, W2 | `agent_status: done` briefly, then the pane disappears | `agent_settled` → `idle` (0.3.0: only at the `Ok` outcome); `Ok` → tab closes |
 | ≈+12 s | E appears | as W1/W2 at +1 s, label `herdr-smoke-failing-worker#<id8>` | parent `place()` |
 | ≈+16 s | E | `idle` | child `session_start` |
 | ≈+17 s | E | `working` | its one `@` turn |
-| ≈+20 s | E | `done` | the turn settled; the theta then returns `Err` |
-| +30 s … +∞ | E | unchanged: `done`, labelled, no `FAILED` in `label`/`title` | no outcome signal reaches the child (the 0.3.0 hook is the planned fix) |
+| ≈+20 s | E | the turn settled — **still `working`** | held (0.3.0: `agent_settled` is mute while holding) |
+| ≈+21 s | E | `label: FAILED herdr-smoke-failing-worker#<id8>`, `agent_status: done` | the `err` outcome event: `pane.rename` then `idle` |
+| +30 s … +∞ | E | unchanged: `FAILED …`, `done`, labelled; persists in `herdr agent list` until closed by hand | the outcome event closes OQ5's retitle half |
+
+No fallback `idle` (the 20 s bound) is expected anywhere in this timeline —
+the fixtures' code stretches are shorter than 20 s.
 
 ### Verified on real Herdr (0.2.0)
 
@@ -210,11 +241,22 @@ from `herdr-smoke.theta`; `herdr pane list` polled every second):
 The `Err` child `w1:p2YT`: t+12.5 s `display_agent:
 herdr-smoke-failing-worker#7c5be1c5`; t+14.6 s `agent: pi`, `idle`; t+15.7 s
 `working`; t+16.7 s `done`; then lingers as `done` (no `FAILED` retitle in
-0.2.0 — arrives with the pi-theta outcome hook in 0.3.0).
+0.2.0 — retitled since 0.3.0).
 
 `herdr agent list` listed all three children while alive. Opt-in suite
 `npm run test:herdr`: 9 rows green (J7's F25 pin: `pane.agent` is `undefined`
 after metadata alone; J8: `agent_session` absent).
+
+### Verified on real Herdr (0.3.0)
+
+To be re-observed from the 0.3.0 smoke (§8 of the seam sheet): the E
+child's `FAILED` label and `done`, the `Ok` children's absence of a
+between-turn `done`, the surface (if any) that shows the `err` message,
+J10's `label`/`state_labels` readout, the wall time from the last turn's
+settle to the `FAILED` label, whether any pane showed the D34 fallback
+`idle` (none expected, §8).
+
+_Pending: filled in after the 0.3.0 smoke._
 
 ## Settings
 
@@ -251,9 +293,13 @@ original inline implementation threw for the same condition.
   and deterministic.
 - `npm run test:herdr` — opt-in; requires a running Herdr daemon and this
   process to sit in a Herdr pane (`config/vitest/vitest.herdr.config.ts`).
-  Run it whenever the client or backend changes. Rows J7–J9 exercise the
+  Run it whenever the client or backend changes. Rows J7–J10 exercise the
   agents-list derivation on a node-rooted pane, the child role end to end,
-  and the `herdr:pi` premise this package's reporting depends on.
+  and the `herdr:pi` premise this package's reporting depends on; J10
+  drives a real pi + pi-theta child (the devDependencies, pi-theta ≥
+  0.478.0) into the child regime with a fabricated launch file and asserts
+  the `FAILED` retitle. The pi-theta devDependency must be ≥ 0.478.0 for
+  the conformance rows (`npm update @bitmonk8/pi-theta`).
 - `npm run typecheck` — `tsc -p tsconfig.json --noEmit`.
 
 Neither suite silently skips: a missing pane environment fails the opt-in
@@ -275,6 +321,12 @@ marking a test skipped.
 - **A duplicate-registration warning** (`ignoring subagent placement
   registration 'herdr'…`) means two copies of this package loaded in the same
   process; run `pi list` to find the second one.
+- **A failed child's tab is not retitled `FAILED`.** Either the child's
+  pi-theta is older than 0.478.0 (no outcome event — the badge then reads
+  `working` for up to 20 s after each turn and `done` after that; nothing
+  is ever retitled), or the companion is not loaded inside the child (`-e`
+  is not propagated; check pi-config's `pi.extensions`), or
+  `PI_THETA_HERDR_REPORT=0` is set.
 - **Pinned outside Herdr fails closed.** `theta.subagentPlacement: "herdr"`
   set while not in a Herdr pane produces
   `theta/load/subagent-placement-unavailable` at compose time; the accompanying
@@ -319,7 +371,8 @@ pane as `MSYS_NO_PATHCONV=1 PI_THETA_HERDR_SMOKE=1 pi --approve --no-session
   pi-theta 0.477.0 by appending `#<id8>`.
 - The `Err` child (`herdr-smoke-failing-worker`) opened a pane
   (`w1:p2T7`) at t+12 s and is not retitled `FAILED …`; see Exit and
-  lifecycle below (v0.1.0; OQ5).
+  lifecycle below (v0.1.0/0.2.0; retitled since 0.3.0 — see *Verified on
+  real Herdr (0.3.0)*).
 
 ### Environment overlay (D4)
 

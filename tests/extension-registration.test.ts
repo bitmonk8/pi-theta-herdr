@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SubagentPlacementBackend } from "@bitmonk8/pi-theta/src/runtime/subagent-placement.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import piThetaHerdr, { probePlacementEventBus, registerHerdrPlacement, type PlacementHost } from "../src/extension.ts";
-import { PLACEMENT_DISCOVER_CHANNEL, PLACEMENT_OFFER_CHANNEL } from "../src/protocol.ts";
+import { PLACEMENT_DISCOVER_CHANNEL, PLACEMENT_OFFER_CHANNEL, SUBAGENT_CHILD_OUTCOME_CHANNEL } from "../src/protocol.ts";
 import { FakeBus, fakeCtx, fakeHost } from "./helpers/fake-host.ts";
 
 const CHILD_ARGV_MARKER = ["--theta-launch", "C:\\tmp\\l\\launch.json"];
@@ -257,6 +257,92 @@ describe("§6.G additions — both roles in one process", () => {
       expect(seqs[2]).toBe(seqs[1]! + 1);
       expect(seqs[0]!).toBeGreaterThanOrEqual(before * 1000 + 1);
       expect(seqs[0]!).toBeLessThanOrEqual(after * 1000 + 1);
+    } finally {
+      process.argv.length = 0;
+      process.argv.push(...savedArgv);
+      for (const key of Object.keys(process.env)) {
+        if (!(key in savedEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, savedEnv);
+      await fake.close();
+    }
+  });
+});
+
+describe("§5.G additions — both roles subscribe over one probed bus", () => {
+  it("G16 the default export subscribes both the outcome channel and the discover channel when the child markers hold", () => {
+    const bus = new FakeBus();
+    const host = fakeHost(bus);
+    const savedArgv = [...process.argv];
+    const savedEnv = { ...process.env };
+    try {
+      process.argv.push(...CHILD_ARGV_MARKER);
+      Object.assign(process.env, CHILD_ENV_MARKERS);
+      piThetaHerdr(host as unknown as ExtensionAPI);
+      expect(bus.subscriberCount(SUBAGENT_CHILD_OUTCOME_CHANNEL)).toBe(1);
+      expect(bus.subscriberCount(PLACEMENT_DISCOVER_CHANNEL)).toBe(1);
+      expect(host.onCalls).toEqual(["session_shutdown", "session_start", "agent_start", "agent_settled", "session_shutdown"]);
+    } finally {
+      process.argv.length = 0;
+      process.argv.push(...savedArgv);
+      for (const key of Object.keys(process.env)) {
+        if (!(key in savedEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, savedEnv);
+    }
+  });
+
+  it("G17 a plain pi process (no child markers) subscribes only as a placement backend", () => {
+    const bus = new FakeBus();
+    const host = fakeHost(bus);
+    piThetaHerdr(host as unknown as ExtensionAPI);
+    expect(bus.subscriberCount(SUBAGENT_CHILD_OUTCOME_CHANNEL)).toBe(0);
+    expect(bus.subscriberCount(PLACEMENT_DISCOVER_CHANNEL)).toBe(1);
+  });
+
+  it("G18 a bus lacking emit (G2's malformed shape) probes to nothing for either role, no throw", () => {
+    const bus = { on: (): (() => void) => (): void => {} };
+    const host = fakeHost(bus);
+    const savedArgv = [...process.argv];
+    const savedEnv = { ...process.env };
+    try {
+      process.argv.push(...CHILD_ARGV_MARKER);
+      Object.assign(process.env, CHILD_ENV_MARKERS);
+      expect(() => piThetaHerdr(host as unknown as ExtensionAPI)).not.toThrow();
+      expect(host.onCalls).toEqual(["session_start", "agent_start", "agent_settled", "session_shutdown"]);
+    } finally {
+      process.argv.length = 0;
+      process.argv.push(...savedArgv);
+      for (const key of Object.keys(process.env)) {
+        if (!(key in savedEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, savedEnv);
+    }
+  });
+
+  it("G19 both roles and the outcome hook fire through the default export in one process", async () => {
+    const { startFakeHerdrServer } = await import("./helpers/fake-herdr-server.ts");
+    const fake = await startFakeHerdrServer();
+    const savedArgv = [...process.argv];
+    const savedEnv = { ...process.env };
+    try {
+      const bus = new FakeBus();
+      const host = fakeHost(bus);
+      process.argv.push(...CHILD_ARGV_MARKER);
+      Object.assign(process.env, fake.env);
+      piThetaHerdr(host as unknown as ExtensionAPI);
+
+      host.emit("session_start", { reason: "startup" }, fakeCtx());
+      await waitUntil(() => fake.requests.length === 3);
+
+      bus.emit(SUBAGENT_CHILD_OUTCOME_CHANNEL, { apiVersion: 1, outcome: "err", slug: "worker" });
+      await waitUntil(() => fake.requests.length === 5);
+
+      expect(fake.requests.slice(3).map((r) => r.method)).toEqual(["pane.rename", "pane.report_agent"]);
+      expect((fake.requests[3]!.params as Record<string, unknown>)["label"]).toBe("FAILED worker#ab12cd34");
+      const reportParams = fake.requests[4]!.params as Record<string, unknown>;
+      expect(reportParams["message"]).toBe("theta returned Err");
+      expect(reportParams["state"]).toBe("idle");
     } finally {
       process.argv.length = 0;
       process.argv.push(...savedArgv);

@@ -12,14 +12,25 @@ import {
   bindPlacementRegistration,
   PLACEMENT_DISCOVER_CHANNEL as REAL_DISCOVER,
   PlacementRegistry,
+  SUBAGENT_CHILD_OUTCOME_API_VERSION as REAL_SUBAGENT_CHILD_OUTCOME_API_VERSION,
+  SUBAGENT_CHILD_OUTCOME_CHANNEL as REAL_SUBAGENT_CHILD_OUTCOME_CHANNEL,
+  type PlacementEventBus as RealPlacementEventBus,
+  type SubagentChildOutcomePayload as RealSubagentChildOutcomePayload,
 } from "@bitmonk8/pi-theta/src/runtime/subagent-placement-registry.ts";
 import { validatePlacementBackend } from "@bitmonk8/pi-theta/src/runtime/subagent-placement.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SUBAGENT_LAUNCH_FLAG, findLaunchFlagOnArgv } from "../../src/protocol.ts";
+import {
+  SUBAGENT_LAUNCH_FLAG,
+  findLaunchFlagOnArgv,
+  isSubagentChildOutcomePayload,
+  SUBAGENT_CHILD_OUTCOME_API_VERSION,
+  SUBAGENT_CHILD_OUTCOME_CHANNEL,
+  type SubagentChildOutcomePayload,
+} from "../../src/protocol.ts";
 import { registerHerdrPlacement } from "../../src/extension.ts";
 import { createHerdrPlacementBackend } from "../../src/herdr-placement-backend.ts";
 import type { HerdrClient, HerdrPaneEnv } from "../../src/herdr-client.ts";
-import type { ChildReporterContext, ChildReporterHost } from "../../src/herdr-child-reporter.ts";
+import type { ChildReporterContext, ChildReporterHost, OutcomeEventBus } from "../../src/herdr-child-reporter.ts";
 import { fakeWire, request } from "../helpers/pi-theta-fixtures.ts";
 import { FakeBus, fakeHost } from "../helpers/fake-host.ts";
 
@@ -173,6 +184,44 @@ describe("§6.Q6 type-level: ChildReporterContext is a structural subset of the 
     void ctx;
     const host = fakeHost(undefined) as unknown as ChildReporterHost;
     void host;
+    expect(true).toBe(true);
+  });
+});
+
+describe("§5.Q outcome-event conformance (pi-theta-real; needs the 0.478.0 devDependency)", () => {
+  it("Q7 the companion's outcome literals equal pi-theta's runtime exports (079ddb67 / 0.478.0)", () => {
+    // This import itself reds loudly (undefined / a thrown "does not provide an export") on an
+    // older installed pi-theta copy — R5 names the cause first.
+    expect(REAL_SUBAGENT_CHILD_OUTCOME_CHANNEL).toBe(SUBAGENT_CHILD_OUTCOME_CHANNEL);
+    expect(SUBAGENT_CHILD_OUTCOME_CHANNEL).toBe("pi-theta:subagent-child:outcome:v1");
+    expect(REAL_SUBAGENT_CHILD_OUTCOME_API_VERSION).toBe(SUBAGENT_CHILD_OUTCOME_API_VERSION);
+    expect(SUBAGENT_CHILD_OUTCOME_API_VERSION).toBe(1);
+  });
+
+  it("Q8 SubagentChildOutcomePayload is mutually assignable with pi-theta's real type and satisfies the companion's guard", () => {
+    for (const outcome of ["ok", "err"] as const) {
+      const real: RealSubagentChildOutcomePayload = {
+        apiVersion: REAL_SUBAGENT_CHILD_OUTCOME_API_VERSION,
+        outcome,
+        slug: "worker",
+      };
+      expect(isSubagentChildOutcomePayload(real)).toBe(true);
+      expect(Object.keys(real).sort()).toEqual(["apiVersion", "outcome", "slug"]);
+      // Type-level mutual assignability (rides npm run typecheck): the producer's payload and
+      // the companion's own type must each accept the other's literal.
+      const a: SubagentChildOutcomePayload = real;
+      const b: RealSubagentChildOutcomePayload = { apiVersion: SUBAGENT_CHILD_OUTCOME_API_VERSION, outcome, slug: "worker" };
+      void a;
+      void b;
+    }
+  });
+
+  it("Q9 the companion's OutcomeEventBus is a structural subset of pi-theta's real PlacementEventBus", () => {
+    // Type-level (rides npm run typecheck): the dep's shape is a subset of the real bus at the pin.
+    const bus: OutcomeEventBus = {} as RealPlacementEventBus;
+    void bus;
+    const fake: OutcomeEventBus = new FakeBus();
+    void fake;
     expect(true).toBe(true);
   });
 });

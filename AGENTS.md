@@ -42,6 +42,9 @@ module-level mutable state, and no code may assume `instanceof` holds across
 graphs (a `HerdrRequestError` thrown in one graph is not the same class object
 in the other). Reporter state lives in the factory closure; handlers are
 released by the `active` latch at `session_shutdown`, not by unsubscription.
+The outcome subscription's release function (what Pi's `EventBus.on` returns
+— there is no `off`) lives in the factory closure and is called at
+`session_shutdown`.
 
 ## Child-side reporting rules
 
@@ -49,3 +52,11 @@ released by the `active` latch at `session_shutdown`, not by unsubscription.
   **and** a Herdr pane env is present **and** `ctx.mode === "tui"`.
 - Wording rule: describe Herdr's handling of `herdr:pi` as observed
   behaviour, never as mechanism.
+- The outcome hook is optional at runtime: hold `working` only while a bus
+  is subscribed (`reporter.subscribed`); never assume the event arrives; the
+  terminal report is sent at most once per session; the outcome handler must
+  not throw (Pi's bus wrapper logs to stderr, which is the TUI pane); the
+  hold is bounded by `HOLD_TIMEOUT_MS`; the timer is unref'd and cleared at
+  `session_shutdown` (and by the next turn, the outcome, `session_start`,
+  `detach`); `onHoldExpired` is a timer callback — closure state only, never
+  throws.

@@ -129,15 +129,47 @@ describe("§5.I package.json dependency discipline and manifest pins", () => {
     expect(herdrConfig.default.test.include).toEqual(["tests/herdr-live/**/*.test.ts"]);
   });
 
-  it("R1 version is 0.2.0, and CHANGELOG.md lists [0.2.0] above [0.1.0]", () => {
+  it("R1 version is 0.3.0 (retargeted from 0.2.0, seam sheet §6.1), and CHANGELOG.md lists [0.2.0] above [0.1.0]", () => {
     const pkg = readJson(join(ROOT, "package.json"));
-    expect(pkg["version"]).toBe("0.2.0");
+    expect(pkg["version"]).toBe("0.3.0");
     const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
     const idx020 = changelog.indexOf("## [0.2.0]");
     const idx010 = changelog.indexOf("## [0.1.0]");
     expect(idx020, "CHANGELOG.md has no '## [0.2.0]' heading").toBeGreaterThanOrEqual(0);
     expect(idx010, "CHANGELOG.md has no '## [0.1.0]' heading").toBeGreaterThanOrEqual(0);
     expect(idx020).toBeLessThan(idx010);
+  });
+
+  it("R4 version is 0.3.0 and CHANGELOG.md lists [0.3.0] above [0.2.0]", () => {
+    const pkg = readJson(join(ROOT, "package.json"));
+    expect(pkg["version"]).toBe("0.3.0");
+    const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+    const idx030 = changelog.indexOf("## [0.3.0]");
+    const idx020 = changelog.indexOf("## [0.2.0]");
+    expect(idx030, "CHANGELOG.md has no '## [0.3.0]' heading").toBeGreaterThanOrEqual(0);
+    expect(idx020, "CHANGELOG.md has no '## [0.2.0]' heading").toBeGreaterThanOrEqual(0);
+    expect(idx030).toBeLessThan(idx020);
+  });
+
+  it("R5 the installed pi-theta devDependency is >= 0.478.0 (the child-outcome commit, 079ddb67)", () => {
+    const piThetaPkg = readJson(join(ROOT, "node_modules", "@bitmonk8", "pi-theta", "package.json"));
+    const version = piThetaPkg["version"];
+    if (typeof version !== "string") {
+      throw new Error("node_modules/@bitmonk8/pi-theta/package.json has no string 'version'");
+    }
+    const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+    if (match === null) {
+      throw new Error(`node_modules/@bitmonk8/pi-theta/package.json version does not parse as major.minor.patch: ${version}`);
+    }
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    const ok = major > 0 || minor >= 478;
+    if (!ok) {
+      throw new Error(
+        `the companion's pi-theta devDependency must be >= 0.478.0 (found ${version}); run npm update @bitmonk8/pi-theta once pi-theta commit 079ddb67 (0.478.0) is pushed`,
+      );
+    }
+    expect(ok).toBe(true);
   });
 
   it("R2 src/herdr-child-reporter.ts exists and is subject to the I2/I3 audits (no bare import, no module-level mutable state)", () => {

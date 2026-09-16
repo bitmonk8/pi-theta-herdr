@@ -204,4 +204,14 @@ describe("§6.K client wrappers (tests/herdr-client-reports.test.ts)", () => {
     expect(HERDR_REPORT_SOURCE).toBe("pi-theta-herdr");
     expect(HERDR_REPORT_AGENT).toBe("pi");
   });
+
+  it("K11 paneRename sends { pane_id, label } only (schema PaneRenameParams, P15)", async () => {
+    const fake = await fakeServer();
+    const client = createHerdrClient({ env: fake.env });
+    await expect(client.paneRename("w1:p9", "FAILED worker")).resolves.toBeUndefined();
+    expect(fake.requests[0]!.method).toBe("pane.rename");
+    const params = fake.requests[0]!.params as Record<string, unknown>;
+    expect(params).toEqual({ pane_id: "w1:p9", label: "FAILED worker" });
+    expect(Object.keys(params)).toEqual(["pane_id", "label"]);
+  });
 });
