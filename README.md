@@ -196,9 +196,14 @@ onto that pane instead of its own — an exposure shared with every Herdr
 integration. Windows `agent_session_path` resume behaviour is unverified
 (the session report is not applied by Herdr 0.8.0 anyway). A child whose
 marked root refuses at load (a bad frontmatter, a hash mismatch) writes a
-refusal envelope and emits no outcome event — its pane stays `idle` and is
-not retitled (pi-theta 0.478.0 scope). Two copies of this package loaded in
-one child each rename and report once — harmless duplicates.
+refusal envelope and emits no outcome event at the pi-theta 0.478.0 pin —
+its pane stays `idle` and is not retitled. When an emitter does report a
+load-pass refusal during an earlier `session_start` handler, the companion
+retains the first valid outcome until its initial activation decision. An
+activated child queues it after normal startup reports; a refused activation,
+`detach`, or shutdown discards it without reopening capture in later sessions.
+The rename remains advisory and may lose to pane closure. Two copies of this
+package loaded in one child each rename and report once — harmless duplicates.
 
 ### Expected `herdr agent list` timeline (0.3.0 — observed 2026-09-16; see
 *Verified on real Herdr (0.3.0)*)

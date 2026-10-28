@@ -355,6 +355,75 @@ describe("§5.G additions — both roles subscribe over one probed bus", () => {
   });
 });
 
+describe("0496 real Pi registration order", () => {
+  it("G20 an earlier session_start refusal reaches the default companion before activation", async () => {
+    // Use the lock-pinned Pi loader/runner and synchronous EventBus, not fakeHost.emit.
+    // The inline-factory loader is exported by Pi's internal extensions index, not its
+    // package root. No resource discovery, model construction, credentials or user UI.
+    const { createEventBus, createExtensionRuntime, ExtensionRunner, SessionManager } = await import(
+      "@earendil-works/pi-coding-agent"
+    );
+    const { loadExtensionFromFactory } = await import(
+      "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"
+    );
+    const { startFakeHerdrServer } = await import("./helpers/fake-herdr-server.ts");
+    const fake = await startFakeHerdrServer();
+    const savedArgv = process.argv;
+    const bus = createEventBus();
+    let runner: InstanceType<typeof ExtensionRunner> | undefined;
+    try {
+      process.argv = [...savedArgv, ...CHILD_ARGV_MARKER];
+      for (const [key, value] of Object.entries(fake.env)) vi.stubEnv(key, value);
+      vi.stubEnv("PI_THETA_HERDR_REPORT", "1");
+      const cwd = process.cwd();
+      const runtime = createExtensionRuntime();
+      const order: string[] = [];
+      const earlier = await loadExtensionFromFactory((pi) => {
+        pi.on("session_start", async () => {
+          order.push("earlier:emit");
+          pi.events.emit(SUBAGENT_CHILD_OUTCOME_CHANNEL, { apiVersion: 1, outcome: "err", slug: "refused" });
+          await Promise.resolve();
+          order.push("earlier:return");
+        });
+      }, cwd, bus, runtime, "<earlier-refusal>");
+      const companion = await loadExtensionFromFactory(piThetaHerdr, cwd, bus, runtime, "<companion>");
+      const later = await loadExtensionFromFactory((pi) => {
+        pi.on("session_start", () => { order.push("later:start"); });
+      }, cwd, bus, runtime, "<later-observer>");
+      const session = SessionManager.inMemory(cwd);
+      session.appendSessionInfo("refused#0496");
+      // This boundary must never be used; in particular do not construct a ModelRegistry
+      // (its defaults discover user model/auth files).
+      const models = new Proxy({} as import("@earendil-works/pi-coding-agent").ModelRegistry, {
+        get: () => { throw new Error("model access is outside this fixture"); },
+      });
+      runner = new ExtensionRunner([earlier, companion, later], runtime, cwd, session, models);
+      runner.setUIContext(undefined, "tui");
+      const errors: unknown[] = [];
+      runner.onError((error) => { errors.push(error); });
+      await runner.emit({ type: "session_start", reason: "startup" });
+      // Quit awaits the reporter's bounded FIFO flush, so no polling/scheduler guess is
+      // needed to distinguish the old three startup reports from the fixed five sends.
+      await runner.emit({ type: "session_shutdown", reason: "quit" });
+      expect(errors).toEqual([]);
+      expect(order).toEqual(["earlier:emit", "earlier:return", "later:start"]);
+      expect(fake.requests.map((r) => r.method)).toEqual([
+        "pane.report_metadata", "pane.report_agent_session", "pane.report_agent", "pane.rename", "pane.report_agent",
+      ]);
+      expect(fake.requests[3]!.params).toEqual({ pane_id: "w1:p1", label: "FAILED refused#0496" });
+      expect(fake.requests[4]!.params).toMatchObject({ state: "idle", message: "theta returned Err" });
+      const seqs = [0, 1, 2, 4].map((i) => (fake.requests[i]!.params as Record<string, unknown>)["seq"] as number);
+      expect(seqs).toEqual([seqs[0], seqs[0]! + 1, seqs[0]! + 2, seqs[0]! + 3]);
+    } finally {
+      if (runner !== undefined) await runner.emit({ type: "session_shutdown", reason: "reload" });
+      bus.clear();
+      process.argv = savedArgv;
+      vi.unstubAllEnvs();
+      await fake.close();
+    }
+  });
+});
+
 // PlacementHost is exercised structurally throughout (fakeHost() satisfies it);
 // referenced here so an accidental removal of the export reds the typecheck.
 const _typeCheck: PlacementHost = fakeHost(undefined);

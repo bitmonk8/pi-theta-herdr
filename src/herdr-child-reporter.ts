@@ -7,7 +7,12 @@ import {
   type HerdrAgentState,
   type HerdrClient,
 } from "./herdr-client.ts";
-import { findLaunchFlagOnArgv, isSubagentChildOutcomePayload, SUBAGENT_CHILD_OUTCOME_CHANNEL } from "./protocol.ts";
+import {
+  findLaunchFlagOnArgv,
+  isSubagentChildOutcomePayload,
+  SUBAGENT_CHILD_OUTCOME_CHANNEL,
+  type SubagentChildOutcomePayload,
+} from "./protocol.ts";
 
 /** `PI_THETA_HERDR_REPORT=0` disables child-side reporting (D21). Read from `deps.env`. */
 export const REPORTING_OPT_OUT_ENV = "PI_THETA_HERDR_REPORT";
@@ -120,6 +125,9 @@ export function createHerdrChildReporter(deps: ChildReporterDeps = {}): HerdrChi
   let holding = false;
   let outcomeSeen = false;
   let releaseOutcome: (() => void) | undefined;
+  // 0496: capture only before the first activation decision. undefined = empty/open,
+  // payload = first valid outcome, null = closed (never reopened by later sessions).
+  let pendingOutcome: SubagentChildOutcomePayload | null | undefined;
   // D34: the bounded hold. Pending only while `active && holding`; every path out of that
   // state clears it. Unref'd so it never keeps the child process alive.
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
@@ -203,6 +211,8 @@ export function createHerdrChildReporter(deps: ChildReporterDeps = {}): HerdrChi
   };
 
   const onSessionStart = (event: ChildReporterSessionEvent, ctx: ChildReporterContext): void => {
+    const pending = pendingOutcome;
+    pendingOutcome = null; // take/discard even if this activation is refused
     const pane = client.env();
     active =
       findLaunchFlagOnArgv(argv) !== undefined &&
@@ -227,6 +237,9 @@ export function createHerdrChildReporter(deps: ChildReporterDeps = {}): HerdrChi
     }
     reportSession(ctx, event.reason, false);
     reportState(ctx.isIdle() ? "idle" : "working");
+    // The emitter may run in an earlier session_start handler. Keep normal startup
+    // reports ahead of its terminal report on the existing FIFO (rename has no seq).
+    if (pending !== undefined && pending !== null) onOutcome(pending);
   };
 
   const onAgentStart = (_event: unknown, ctx: ChildReporterContext): void => {
@@ -257,7 +270,14 @@ export function createHerdrChildReporter(deps: ChildReporterDeps = {}): HerdrChi
   // D28/D29: the terminal report. Reads closure state only (never a ctx — P7). Must never
   // throw: Pi's bus wrapper would `console.error` into the TUI pane (P13).
   const onOutcome = (data: unknown): void => {
-    if (!active || outcomeSeen || !isSubagentChildOutcomePayload(data)) return;
+    if (outcomeSeen || !isSubagentChildOutcomePayload(data)) return;
+    if (!active) {
+      if (pendingOutcome === undefined) {
+        // Snapshot plain protocol data; first valid wins without preactivation I/O.
+        pendingOutcome = { apiVersion: data.apiVersion, outcome: data.outcome, slug: data.slug };
+      }
+      return;
+    }
     outcomeSeen = true;
     holding = false;
     clearHoldTimer();
@@ -272,6 +292,7 @@ export function createHerdrChildReporter(deps: ChildReporterDeps = {}): HerdrChi
 
   const detach = (): void => {
     active = false;
+    pendingOutcome = null;
     clearHoldTimer();
   };
 

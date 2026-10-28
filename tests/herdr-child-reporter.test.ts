@@ -14,6 +14,7 @@ import {
   ERR_OUTCOME_MESSAGE,
   FAILED_TITLE_PREFIX,
   HOLD_TIMEOUT_MS,
+  REPORTING_OPT_OUT_ENV,
   type ChildReporterHost,
   type ChildReporterDeps,
   type HerdrChildReporter,
@@ -1361,6 +1362,167 @@ describe("§5.S outcome hook", () => {
     ]);
     bus.emit(OUTCOME, OUTCOME_ERR);
     expect(bus.subscriberCount(OUTCOME)).toBe(0);
+  });
+});
+
+describe("0496 initial-activation outcome latch", () => {
+  it.each([OUTCOME_ERR, OUTCOME_OK])("E1 early $outcome waits for startup, then uses the terminal FIFO", async (outcome) => {
+    const fake = await fakeServer();
+    const bus = new FakeBus();
+    const { reporter, host } = makeReporter(fake, { events: bus });
+    expect(() => bus.emit(OUTCOME, outcome)).not.toThrow();
+    await reporter.flush();
+    expect(reporter.active).toBe(false);
+    expect(fake.connections).toBe(0);
+
+    host.emit("session_start", { reason: "startup" }, fakeCtx({ idle: false }));
+    await reporter.flush();
+    const terminal = {
+      pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT,
+      seq: B + 4, state: "idle", ...(outcome.outcome === "err" ? { message: ERR_OUTCOME_MESSAGE } : {}),
+    };
+    expect(fake.requests.map((r) => [r.method, r.params])).toEqual([
+      ["pane.report_metadata", { pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, seq: B + 1, display_agent: "worker#ab12cd34" }],
+      ["pane.report_agent_session", {
+        pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT,
+        seq: B + 2, session_start_source: "startup", agent_session_id: "sid-1",
+      }],
+      ["pane.report_agent", { pane_id: "w1:p1", source: HERDR_REPORT_SOURCE, agent: HERDR_REPORT_AGENT, seq: B + 3, state: "working" }],
+      ...(outcome.outcome === "err" ? [["pane.rename", { pane_id: "w1:p1", label: "FAILED worker#ab12cd34" }]] : []),
+      ["pane.report_agent", terminal],
+    ]);
+    // Consumption marks outcomeSeen: a later turn settles normally, without a hold.
+    host.emit("agent_start", {}, fakeCtx());
+    host.emit("agent_settled", {}, fakeCtx());
+    await reporter.flush();
+    expect(fake.requests.slice(-2).map((r) => (r.params as Record<string, unknown>)["state"])).toEqual(["working", "idle"]);
+  });
+
+  it.each([
+    { sessionName: undefined }, { sessionName: "" }, { omitGetSessionName: true },
+  ])("E2 early Err falls back to its slug without a session label: %j", async (ctxOverrides) => {
+    const bus = new FakeBus();
+    const { reporter, host, client } = makeHoldReporter(bus);
+    bus.emit(OUTCOME, { ...OUTCOME_ERR, slug: "refused" });
+    host.emit("session_start", { reason: "startup" }, fakeCtx(ctxOverrides));
+    await reporter.flush();
+    expect(client.calls.paneReportMetadata).toEqual([]);
+    expect(client.calls.paneRename.map((c) => c.label)).toEqual(["FAILED refused"]);
+    expect(client.calls.paneReportAgent.map((c) => [c.report.seq, c.report.message])).toEqual([
+      [B + 2, undefined], [B + 3, ERR_OUTCOME_MESSAGE],
+    ]);
+  });
+
+  it.each([OUTCOME_ERR, OUTCOME_OK])("E3 first valid $outcome wins over duplicate/conflicting events before and after activation", async (first) => {
+    const bus = new FakeBus();
+    const { reporter, host, client } = makeHoldReporter(bus);
+    const conflict = first.outcome === "err" ? OUTCOME_OK : OUTCOME_ERR;
+    bus.emit(OUTCOME, first);
+    bus.emit(OUTCOME, first);
+    bus.emit(OUTCOME, conflict);
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    bus.emit(OUTCOME, conflict);
+    bus.emit(OUTCOME, first);
+    await reporter.flush();
+    expect(client.calls.paneReportAgent.map((c) => [c.report.state, c.report.message])).toEqual([
+      ["idle", undefined], ["idle", first.outcome === "err" ? ERR_OUTCOME_MESSAGE : undefined],
+    ]);
+    expect(client.calls.paneRename.map((c) => c.label)).toEqual(first.outcome === "err" ? ["FAILED worker#ab12cd34"] : []);
+  });
+
+  it("E4 invalid payloads/version do not occupy the initial slot or report", async () => {
+    const bus = new FakeBus();
+    const { reporter, host, client } = makeHoldReporter(bus);
+    for (const payload of [
+      null, "x", 42, [], {}, { apiVersion: 1 },
+      { ...OUTCOME_ERR, apiVersion: 2 }, { ...OUTCOME_ERR, outcome: "meh" },
+      { apiVersion: 1, outcome: "err" }, { ...OUTCOME_ERR, slug: "" }, { ...OUTCOME_ERR, slug: 5 },
+    ]) expect(() => bus.emit(OUTCOME, payload)).not.toThrow();
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    await reporter.flush();
+    expect(Object.values(client.calls).every((calls) => calls.length === 0)).toBe(true);
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    await reporter.flush();
+    expect(client.calls.paneRename.map((c) => c.label)).toEqual(["FAILED worker#ab12cd34"]);
+    expect(client.calls.paneReportAgent).toHaveLength(2);
+  });
+
+  it.each(["nonchild", "opt-out", "paneless", "json", "print", "rpc"])(
+    "E5 rejected %s activation discards pending data and closes capture permanently",
+    async (gate) => {
+      const bus = new FakeBus();
+      const argv = gate === "nonchild" ? ["node"] : [...CHILD_ARGV];
+      const env: NodeJS.ProcessEnv = gate === "opt-out" ? { PI_THETA_HERDR_REPORT: "0" } : {};
+      let pane: HerdrPaneEnv | null = gate === "paneless" ? null : PANE;
+      const client = { ...fakeClient(), env: (): HerdrPaneEnv | null => pane };
+      const { reporter, host } = makeHoldReporter(bus, { argv, env, client });
+      bus.emit(OUTCOME, OUTCOME_ERR);
+      host.emit("session_start", { reason: "startup" }, fakeCtx({ mode: ["json", "print", "rpc"].includes(gate) ? gate : "tui" }));
+      await reporter.flush();
+      expect(reporter.active).toBe(false);
+      expect(Object.values(client.calls).every((calls) => calls.length === 0)).toBe(true);
+      // Repair the gate but emit while still inactive: neither this event nor the
+      // discarded initial event may be replayed by a replacement/repeated start.
+      argv.splice(0, argv.length, ...CHILD_ARGV);
+      delete env[REPORTING_OPT_OUT_ENV];
+      pane = PANE;
+      bus.emit(OUTCOME, { ...OUTCOME_ERR, slug: "later-inactive" });
+      host.emit("session_start", { reason: "new" }, fakeCtx());
+      await reporter.flush();
+      expect(reporter.active).toBe(true);
+      expect(client.calls.paneRename).toEqual([]);
+      expect(client.calls.paneReportAgent.map((c) => c.report.message)).toEqual([undefined]);
+      bus.emit(OUTCOME, OUTCOME_OK);
+      await reporter.flush();
+      expect(client.calls.paneReportAgent).toHaveLength(2);
+    },
+  );
+
+  it.each(["detach", "reload", "quit"])("E6 %s before activation discards pending data and never reopens capture", async (stop) => {
+    const bus = new FakeBus();
+    const { reporter, host, client } = makeHoldReporter(bus);
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    if (stop === "detach") reporter.detach();
+    else await Promise.all(host.emit("session_shutdown", { reason: stop }, fakeCtx()));
+    bus.emit(OUTCOME, { ...OUTCOME_ERR, slug: "after-stop" });
+    await reporter.flush();
+    expect(Object.values(client.calls).every((calls) => calls.length === 0)).toBe(true);
+    expect(reporter.subscribed).toBe(stop === "detach");
+    host.emit("session_start", { reason: "new" }, fakeCtx());
+    await reporter.flush();
+    expect(client.calls.paneRename).toEqual([]);
+    expect(client.calls.paneReportAgent.map((c) => c.report.message)).toEqual([undefined]);
+    expect(reporter.subscribed).toBe(stop === "detach");
+    expect(bus.subscriberCount(OUTCOME)).toBe(stop === "detach" ? 1 : 0);
+  });
+
+  it("E7 a consumed early outcome is not replayed by repeated session_start", async () => {
+    const bus = new FakeBus();
+    const { reporter, host, client } = makeHoldReporter(bus);
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    await reporter.flush();
+    expect(client.calls.paneReportAgent).toHaveLength(2);
+    host.emit("session_start", { reason: "new" }, fakeCtx());
+    await reporter.flush();
+    expect(client.calls.paneReportAgent).toHaveLength(3);
+    expect(client.calls.paneRename).toHaveLength(1);
+    // Existing per-session outcome reset remains intact.
+    bus.emit(OUTCOME, OUTCOME_OK);
+    await reporter.flush();
+    expect(client.calls.paneReportAgent).toHaveLength(4);
+  });
+
+  it("E8 an initially empty slot stays closed across later inactivity", async () => {
+    const bus = new FakeBus();
+    const { reporter, host, client } = makeHoldReporter(bus);
+    host.emit("session_start", { reason: "startup" }, fakeCtx());
+    host.emit("session_start", { reason: "new" }, fakeCtx({ mode: "json" }));
+    bus.emit(OUTCOME, OUTCOME_ERR);
+    host.emit("session_start", { reason: "resume" }, fakeCtx());
+    await reporter.flush();
+    expect(client.calls.paneRename).toEqual([]);
+    expect(client.calls.paneReportAgent.map((c) => c.report.message)).toEqual([undefined, undefined]);
   });
 });
 
