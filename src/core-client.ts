@@ -89,6 +89,12 @@ export interface CoreRequestOptions {
 export interface CoreClientDeps {
   readonly env?: NodeJS.ProcessEnv;
   readonly connect?: (socketPath: string) => net.Socket;
+  /**
+   * Anonymous mode, for tools that run OUTSIDE any Core terminal (e.g. resurrect after a reboot):
+   * connect to this socket with no caller identity. Only root runs (`noParent: true`) are allowed
+   * and no `caller` is sent. Connecting never starts a core: a missing daemon is `unreachable`.
+   */
+  readonly endpoint?: string;
   /** Generations this build accepts. Default `[CORE_PROTOCOL_GENERATION]`. Tests only. */
   readonly acceptedGenerations?: readonly number[];
 }
@@ -202,7 +208,12 @@ export function createCoreClient(deps: CoreClientDeps = {}): CoreClient {
   const connect = deps.connect ?? ((p: string): net.Socket => net.connect({ path: p }));
   const accepted = deps.acceptedGenerations ?? [CORE_PROTOCOL_GENERATION];
 
+  const anonymous = deps.endpoint !== undefined;
+  if (anonymous && !path.isAbsolute(deps.endpoint as string)) {
+    throw new CoreRequestError("herdr-core: endpoint must be an absolute socket path", "connect", "invalid-request");
+  }
   const self = (method: string): CoreTerminalEnv => {
+    if (anonymous) return { terminalId: "", socketPath: deps.endpoint as string, session: clientEnv["HC_SESSION"]?.trim() || null };
     const e = coreEnv(clientEnv);
     if (!e) throw new CoreRequestError("not inside a herdr-core terminal (HC_TERMINAL_ID / HC_TERMINAL_SOCKET missing or invalid)", method, "not-in-core");
     return e;
@@ -340,10 +351,13 @@ export function createCoreClient(deps: CoreClientDeps = {}): CoreClient {
         `herdr-core terminal.run: refusing to send ${secret.join(", ")} in the env overlay (Core persists overlays); let the launcher read secrets itself`,
         method, "invalid-request");
     }
+    if (anonymous && !input.noParent) {
+      throw new CoreRequestError("herdr-core terminal.run: outside a Core terminal only root runs (noParent) are allowed", method, "invalid-request");
+    }
     const params: Record<string, unknown> = {
       argv: [...input.argv],
       cwd: input.cwd,
-      caller: me.terminalId,
+      ...(anonymous ? {} : { caller: me.terminalId }),
     };
     if (input.noParent) {
       params["no_parent"] = true;
@@ -377,7 +391,8 @@ export function createCoreClient(deps: CoreClientDeps = {}): CoreClient {
 
   const withTarget = (method: string, terminal: string): Record<string, unknown> => {
     assertLocalTarget(terminal, "terminal", method);
-    return { terminal, caller: self(method).terminalId };
+    const me = self(method);
+    return anonymous ? { terminal } : { terminal, caller: me.terminalId };
   };
 
   const terminalGet = async (terminal: string, opts: CoreRequestOptions = {}) =>

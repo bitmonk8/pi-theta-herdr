@@ -215,3 +215,25 @@ describe("over a socket", () => {
     await expect(c.hello({ timeoutMs: 1000 })).rejects.toMatchObject({ kind: "unreachable" });
   });
 });
+
+describe("anonymous mode (outside any Core terminal)", () => {
+  let core: ReturnType<typeof fakeCore>;
+  afterEach(async () => core && (await core.stop()));
+  it("only root runs, no caller sent, explicit no_parent", async () => {
+    core = fakeCore();
+    await core.start();
+    const c = createCoreClient({ env: {}, endpoint: core.sock });
+    expect(() => c.runParams({ argv: ["a"], cwd: "/" })).toThrow(/only root runs/);
+    await c.terminalRun({ argv: ["a"], cwd: "/tmp", noParent: true });
+    expect(core.received[1]!.params).toEqual({ argv: ["a"], cwd: "/tmp", no_parent: true });
+    await c.terminalGet("t2");
+    expect(core.received[3]!.params).toEqual({ terminal: "t2" });
+  });
+  it("a missing daemon is unreachable, never started", async () => {
+    const c = createCoreClient({ env: {}, endpoint: "/nonexistent/hc.sock" });
+    await expect(c.hello({ timeoutMs: 1000 })).rejects.toMatchObject({ kind: "unreachable" });
+  });
+  it("relative endpoint refused", () => {
+    expect(() => createCoreClient({ env: {}, endpoint: "rel.sock" })).toThrow(/absolute/);
+  });
+});
