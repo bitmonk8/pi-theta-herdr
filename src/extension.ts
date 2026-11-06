@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { SubagentPlacementBackend } from "@bitmonk8/pi-theta/src/runtime/subagent-placement";
 import { createHerdrPlacementBackend } from "./herdr-placement-backend.ts";
+import { createCorePlacementBackend } from "./core-placement-backend.ts";
 import { isPlacementDiscoverPayload, PLACEMENT_DISCOVER_CHANNEL } from "./protocol.ts";
 import { attachHerdrChildReporter, type ChildReporterHost } from "./herdr-child-reporter.ts";
 
@@ -19,6 +20,12 @@ export interface PlacementHost {
 export interface RegisterHerdrPlacementDeps {
   /** Default `createHerdrPlacementBackend()`. */
   readonly backend?: SubagentPlacementBackend;
+  /**
+   * Further backends registered from the SAME discover subscription and released by the same
+   * `session_shutdown` handler (one subscription per process stays the invariant). The default
+   * export passes the separate `herdr-core` backend here.
+   */
+  readonly also?: readonly SubagentPlacementBackend[];
 }
 
 /**
@@ -51,14 +58,14 @@ export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrP
   if (events === undefined) {
     return;
   }
-  const backend = deps.backend ?? createHerdrPlacementBackend();
+  const backends = [deps.backend ?? createHerdrPlacementBackend(), ...(deps.also ?? [])];
   let registeredThisSession = false;
   const unsubscribe = events.on(PLACEMENT_DISCOVER_CHANNEL, (data: unknown): void => {
     if (!isPlacementDiscoverPayload(data) || registeredThisSession) {
       return;
     }
     registeredThisSession = true;
-    data.register(backend);
+    for (const backend of backends) data.register(backend);
   });
   host.on("session_shutdown", (): void => {
     registeredThisSession = false;
@@ -79,7 +86,9 @@ export function registerHerdrPlacement(host: PlacementHost, deps: RegisterHerdrP
  */
 export default function piThetaHerdr(pi: ExtensionAPI): void {
   const host = pi as unknown as PlacementHost;
-  registerHerdrPlacement(host);
+  // Parent role: `herdr` (legacy) and `herdr-core` (migration plan §3) — two distinct names,
+  // one discover subscription. Each backend's detect() decides which can actually place here.
+  registerHerdrPlacement(host, { also: [createCorePlacementBackend()] });
   const events = probePlacementEventBus(host.events);
   attachHerdrChildReporter(pi as unknown as ChildReporterHost, events !== undefined ? { events } : {});
 }

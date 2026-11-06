@@ -233,11 +233,13 @@ describe("§6.G additions — both roles in one process", () => {
       Object.assign(process.env, fake.env);
       piThetaHerdr(host as unknown as ExtensionAPI);
 
-      let registerCount = 0;
+      // Registration once per backend: the legacy `herdr` backend and the separate
+      // `herdr-core` backend (migration plan §3), each exactly once from one subscription.
+      const registered: string[] = [];
       bus.emit(PLACEMENT_DISCOVER_CHANNEL, {
         apiVersion: 1,
-        register: (): void => {
-          registerCount += 1;
+        register: (b: { name: string }): void => {
+          registered.push(b.name);
         },
       });
 
@@ -246,7 +248,7 @@ describe("§6.G additions — both roles in one process", () => {
       const after = Date.now();
       await waitUntil(() => fake.requests.length === 3);
 
-      expect(registerCount).toBe(1);
+      expect(registered).toEqual(["herdr", "herdr-core"]);
       expect(fake.requests.map((r) => r.method)).toEqual([
         "pane.report_metadata",
         "pane.report_agent_session",

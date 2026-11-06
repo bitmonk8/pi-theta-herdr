@@ -5,6 +5,27 @@ The format follows Keep a Changelog; the project adheres to Semantic Versioning.
 The package versions independently of pi-theta against the registration
 protocol's `apiVersion` (RFC 0012 §5).
 
+## [0.4.0]
+
+### Added
+- `src/core-client.ts` (public deep-import path, like `src/herdr-client.ts`): a local-only
+  Herdr Core JSON-RPC 2.0 client. Every connection opens with `hello` and refuses any protocol
+  generation other than 1; `terminal.run` always sends `cwd`, `caller` and `parent` or
+  `no_parent`; `on`, `machine/terminal` targets and qualified parents are rejected before any
+  connection; secret-looking names are refused in the env overlay (Core persists overlays);
+  collision-safe `coreName()`; get/kill/rm/label; anonymous endpoint mode (root runs only) for
+  tools outside Core.
+- `herdr-core` placement backend (`src/core-placement-backend.ts`), a separate name from `herdr`:
+  detects verified Core identity plus a runnable `pi-core` launcher, priority 60 (above herdr),
+  `inheritsEnv: false` (control plane on the launch file; pi-theta's credential guard applies),
+  spawns `pi-core --exec <pi> <args>`, keeps Core's die-with-parent default (theta tethering),
+  `no_notify`, overlay `HERDR_ENV=0` only. Finished child terminals are retained.
+
+### Changed
+- The default export registers both `herdr` and `herdr-core` from its single discover
+  subscription (still one subscription and one `session_shutdown` release per process).
+  `src/herdr-client.ts` is unchanged.
+
 ## [0.3.0]
 
 ### Added
