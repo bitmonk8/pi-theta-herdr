@@ -237,3 +237,23 @@ describe("anonymous mode (outside any Core terminal)", () => {
     expect(() => createCoreClient({ env: {}, endpoint: "rel.sock" })).toThrow(/absolute/);
   });
 });
+
+describe("review N4: a socket that never connected is a definite failure", () => {
+  it("ENOENT before connect is 'unreachable' (definite, nothing was sent)", async () => {
+    const c = createCoreClient({ env: envFor("/nonexistent/dir/core.sock") });
+    await expect(c.terminalRun({ argv: ["a"], cwd: "/tmp" }, { timeoutMs: 1000 })).rejects.toMatchObject({ kind: "unreachable" });
+  });
+  it("a connection that dies after the request was written is 'closed' (uncertain)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-hc-"));
+    const sock = path.join(dir, "c.sock");
+    const server = net.createServer((s) => s.on("data", () => s.destroy()));
+    await new Promise<void>((r) => server.listen(sock, () => r()));
+    try {
+      const c = createCoreClient({ env: envFor(sock) });
+      await expect(c.terminalRun({ argv: ["a"], cwd: "/tmp" }, { timeoutMs: 2000 })).rejects.toMatchObject({ kind: "closed" });
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

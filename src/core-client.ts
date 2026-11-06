@@ -237,6 +237,7 @@ export function createCoreClient(deps: CoreClientDeps = {}): CoreClient {
       let buffer = "";
       let done = false;
       let core: CoreIdentity | null = null;
+      let connected = false;
       const finish = (err: Error | null, result?: unknown): void => {
         if (done) return;
         done = true;
@@ -250,7 +251,10 @@ export function createCoreClient(deps: CoreClientDeps = {}): CoreClient {
       const send = (id: number, m: string, p: Record<string, unknown>): void => {
         socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: m, params: p })}\n`);
       };
-      socket.on("connect", () => send(1, "hello", { generation: CORE_PROTOCOL_GENERATION }));
+      socket.on("connect", () => {
+        connected = true;
+        send(1, "hello", { generation: CORE_PROTOCOL_GENERATION });
+      });
       socket.on("data", (chunk) => {
         buffer += chunk.toString();
         let nl: number;
@@ -305,7 +309,14 @@ export function createCoreClient(deps: CoreClientDeps = {}): CoreClient {
           }
         }
       });
-      socket.on("error", (err) => finish(new CoreRequestError(`herdr-core unreachable: ${err.message}`, method, "unreachable")));
+      // Before connect nothing was sent: `unreachable` is a definite failure. After connect the
+      // request may have reached the core: report it as `closed` (outcome uncertain).
+      socket.on("error", (err) =>
+        finish(
+          connected
+            ? new CoreRequestError(`herdr-core ${method}: connection failed after the request may have been sent: ${err.message}`, method, "closed")
+            : new CoreRequestError(`herdr-core unreachable: ${err.message}`, method, "unreachable"),
+        ));
       socket.on("end", () => finish(new CoreRequestError(`herdr-core ${method}: connection closed before response`, method, "closed")));
     });
   };
