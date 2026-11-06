@@ -90,3 +90,25 @@ describe("herdr-core theta placement", () => {
     void registerHerdrPlacement;
   });
 });
+
+describe("review #4: the legacy herdr backend stands down inside Core", () => {
+  it("never detects and refuses to place when Core identity is present, even with full HERDR_* set", async () => {
+    const { createHerdrPlacementBackend } = await import("../src/herdr-placement-backend.ts");
+    const { createHerdrClient } = await import("../src/herdr-client.ts");
+    const herdr = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/nonexistent/herdr.sock", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" };
+    const inCore = createHerdrPlacementBackend({ client: createHerdrClient({ env: herdr }), inCore: () => true });
+    expect(inCore.detect()).toBe(false);
+    await expect(inCore.place(request)).rejects.toThrow(/inside a herdr-core terminal/);
+    const outside = createHerdrPlacementBackend({ client: createHerdrClient({ env: herdr }), inCore: () => false });
+    expect(outside.detect()).toBe(true);
+  });
+  it("default inCore follows process.env Core identity", async () => {
+    const { createHerdrPlacementBackend } = await import("../src/herdr-placement-backend.ts");
+    const { createHerdrClient } = await import("../src/herdr-client.ts");
+    const herdr = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "/x", HERDR_PANE_ID: "w1:p1", HERDR_WORKSPACE_ID: "w1" };
+    const b = createHerdrPlacementBackend({ client: createHerdrClient({ env: herdr }) });
+    expect(b.detect()).toBe(true);
+    process.env.HC_TERMINAL_ID = "t3"; process.env.HC_TERMINAL_SOCKET = "/run/user/1000/herdr-core/default.sock";
+    try { expect(b.detect()).toBe(false); } finally { process.env.HC_TERMINAL_ID = ""; process.env.HC_TERMINAL_SOCKET = ""; }
+  });
+});

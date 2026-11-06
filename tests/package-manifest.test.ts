@@ -129,9 +129,9 @@ describe("§5.I package.json dependency discipline and manifest pins", () => {
     expect(herdrConfig.default.test.include).toEqual(["tests/herdr-live/**/*.test.ts"]);
   });
 
-  it("R1 version is 0.3.0 (retargeted from 0.2.0, seam sheet §6.1), and CHANGELOG.md lists [0.2.0] above [0.1.0]", () => {
+  it("R1 version is 0.4.0 (retargeted from 0.3.0, herdr-core backend), and CHANGELOG.md lists [0.2.0] above [0.1.0]", () => {
     const pkg = readJson(join(ROOT, "package.json"));
-    expect(pkg["version"]).toBe("0.3.0");
+    expect(pkg["version"]).toBe("0.4.0");
     const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
     const idx020 = changelog.indexOf("## [0.2.0]");
     const idx010 = changelog.indexOf("## [0.1.0]");
@@ -140,9 +140,12 @@ describe("§5.I package.json dependency discipline and manifest pins", () => {
     expect(idx020).toBeLessThan(idx010);
   });
 
-  it("R4 version is 0.3.0 and CHANGELOG.md lists [0.3.0] above [0.2.0]", () => {
+  it("R4 version is 0.4.0 and CHANGELOG.md lists [0.4.0] above [0.3.0] above [0.2.0]", () => {
     const pkg = readJson(join(ROOT, "package.json"));
-    expect(pkg["version"]).toBe("0.3.0");
+    expect(pkg["version"]).toBe("0.4.0");
+    const top = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+    expect(top.indexOf("## [0.4.0]"), "CHANGELOG.md has no '## [0.4.0]' heading").toBeGreaterThanOrEqual(0);
+    expect(top.indexOf("## [0.4.0]")).toBeLessThan(top.indexOf("## [0.3.0]"));
     const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
     const idx030 = changelog.indexOf("## [0.3.0]");
     const idx020 = changelog.indexOf("## [0.2.0]");

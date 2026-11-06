@@ -1,5 +1,6 @@
 import type { PlacedChild, SubagentPlacementBackend, SubagentPlacementRequest } from "@bitmonk8/pi-theta/src/runtime/subagent-placement";
 import { createHerdrClient, HerdrRequestError, HERDR_REPORT_SOURCE, type HerdrClient } from "./herdr-client.ts";
+import { coreEnv } from "./core-client.ts";
 
 export const HERDR_PLACEMENT_NAME = "herdr";
 /**
@@ -27,6 +28,13 @@ export interface HerdrPlacementBackendDeps {
   readonly client?: HerdrClient;
   /** Clock for the metadata report's `seq`; default `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Verified Herdr Core identity present (migration plan §1/§3). Inside Core any HERDR_* set is a
+   * leftover of whoever started the core: this backend then never detects and refuses to place,
+   * whatever the theta selector says, so no `layout.apply` can reach the legacy server from Core.
+   * Default: `coreEnv() !== null` over `process.env`.
+   */
+  readonly inCore?: () => boolean;
 }
 
 /**
@@ -51,12 +59,16 @@ export function paneEnvOverlay(env: Readonly<Record<string, string | undefined>>
 export function createHerdrPlacementBackend(deps: HerdrPlacementBackendDeps = {}): SubagentPlacementBackend {
   const client = deps.client ?? createHerdrClient();
   const now = deps.now ?? Date.now;
+  const inCore = deps.inCore ?? ((): boolean => coreEnv() !== null);
   return {
     name: HERDR_PLACEMENT_NAME,
     priority: HERDR_PLACEMENT_PRIORITY,
     capabilities: { visible: true, inheritsEnv: true },
-    detect: (): boolean => client.env() !== null,
+    detect: (): boolean => !inCore() && client.env() !== null,
     place: async (request: SubagentPlacementRequest): Promise<PlacedChild> => {
+      if (inCore()) {
+        throw new HerdrPlacementError(request.label, "inside a herdr-core terminal; inherited HERDR_* is not this process's mux (use herdr-core)");
+      }
       const pane = client.env();
       if (pane === null) {
         throw new HerdrPlacementError(request.label, "not inside a herdr pane");

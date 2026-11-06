@@ -11,6 +11,10 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     exclude: [...configDefaults.exclude, "tests/herdr-live/**"],
     environment: "node",
+    // Deterministic wherever the suite runs: inside a Herdr Core terminal the inherited Core
+    // identity would otherwise switch the herdr backend off (it stands down in Core). Tests that
+    // need Core identity inject it explicitly.
+    env: { HC_TERMINAL_ID: "", HC_TERMINAL_SOCKET: "", HC_SCOPE: "" },
     // The conformance suite imports pi-theta's TypeScript sources straight out
     // of node_modules (`@bitmonk8/pi-theta/src/...`); inline them so Vite
     // transforms them instead of handing a `.ts` file to Node (which refuses to
